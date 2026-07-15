@@ -84,6 +84,7 @@ import re
 import smtplib
 import ssl
 import sys
+import unicodedata
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -195,40 +196,47 @@ def parse_hanoi_table(html):
     SOURCE_URL and check the Hanoi section still looks like
     "Quận X | NN triệu/m2 | N% up/down arrow" per row.
     """
+    def norm(s):
+        # Collapse NBSP/whitespace and normalize to NFC so diacritics
+        # compare equal regardless of which composed/decomposed form the
+        # page happens to send them in.
+        s = s.replace("\xa0", " ")
+        s = re.sub(r"\s+", " ", s).strip()
+        return unicodedata.normalize("NFC", s)
+
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text("\n")
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    lines = [norm(l) for l in text.split("\n") if norm(l)]
+    areas_norm = {norm(a): a for a in HANOI_AREAS}
 
     rows = []
     seen = set()
     for i, line in enumerate(lines):
-        area = next((a for a in HANOI_AREAS if line == a), None)
+        area = areas_norm.get(line)
         if not area or area in seen:
             continue
-        # Look ahead a few lines for the price + change figures that
-        # mogi.vn renders right after each district name.
-        window = lines[i + 1 : i + 5]
-        price = None
+        # mogi.vn renders price + change together on the single line right
+        # after the district name (e.g. "214 triệu/m2  4,9% ▲", or
+        # "207 triệu/m2  —" when there's no change) - so only look at that
+        # one line, never further, or a later row's % can bleed into this
+        # one.
+        if i + 1 >= len(lines):
+            continue
+        w = lines[i + 1]
+        m = PRICE_RE.search(w)
+        if not m:
+            continue
+        price = m.group(1)
         change = None
         direction = None
-        for w in window:
-            if price is None:
-                m = PRICE_RE.search(w)
-                if m:
-                    price = m.group(1)
-                    pm = PERCENT_RE.search(w)
-                    if pm:
-                        change = pm.group(1)
-                        direction = "up" if "▲" in w else ("down" if "▼" in w else None)
-                    continue
-            if price is not None and change is None:
-                pm = PERCENT_RE.search(w)
-                if pm:
-                    change = pm.group(1)
-                    direction = "up" if "▲" in w else ("down" if "▼" in w else None)
-                    break
-        if price is None:
-            continue
+        pm = PERCENT_RE.search(w)
+        if pm:
+            change = pm.group(1)
+            direction = "up" if "▲" in w else ("down" if "▼" in w else None)
+            if direction is None and i + 2 < len(lines) and lines[i + 2] in ("▲", "▼"):
+                # The arrow can land in its own text node (its own line)
+                # right after the price+percent line.
+                direction = "up" if lines[i + 2] == "▲" else "down"
         seen.add(area)
         rows.append({"area": area, "price": price, "change": change, "direction": direction})
     return rows
