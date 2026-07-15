@@ -1,0 +1,66 @@
+name: Send Hanoi House Price
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade certifi
+          pip install -r requirements.txt
+
+      - name: Restore dedup state
+        run: |
+          git fetch origin house-price-state 2>/dev/null && \
+            git show origin/house-price-state:state/last_price.json > /tmp/last_price.json 2>/dev/null || true
+          mkdir -p state
+          if [ -s /tmp/last_price.json ]; then
+            cp /tmp/last_price.json state/last_price.json
+            echo "Restored previous state."
+          else
+            echo "No previous state found - first run."
+          fi
+
+      - name: Generate email
+        env:
+          SEND_ONLY_ON_CHANGE: "false"
+          TIMEZONE: "Asia/Ho_Chi_Minh"
+        run: python hanoi_house_price_emailer.py generate
+
+      - name: Send email
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          HOUSE_RECIPIENT: ${{ secrets.HOUSE_RECIPIENT }}
+        run: python hanoi_house_price_emailer.py send
+
+      - name: Persist dedup state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cp state/last_price.json /tmp/last_price.json
+          git checkout --orphan house-price-state-new
+          git reset --hard
+          mkdir -p state
+          cp /tmp/last_price.json state/last_price.json
+          git add -f state/last_price.json
+          git commit -m "Update dedup state" || echo "Nothing to commit"
+          git branch -f house-price-state house-price-state-new
+          git push origin house-price-state --force
