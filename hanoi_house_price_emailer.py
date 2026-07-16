@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hanoi House/Land Prices (multiple sources) -> Email
+Hanoi House/Land Prices (many sources, silently skips whatever fails) -> Email
 (runs on GitHub Actions, no local computer needed)
 
 Same shape as the gold-price-emailer / 9gag-meme-emailer this is modeled on:
@@ -8,41 +8,53 @@ fetches price data, then emails an HTML digest via Gmail SMTP. Runs in two
 phases so the workflow can persist dedup state *between* them:
 
     python hanoi_house_price_emailer.py generate
-        -> scrapes each source, writes the composed email
-           (subject/html/text) under ./email/, and updates the
-           "last sent price" state file
+        -> tries every source in SOURCES, keeps whichever ones actually
+           returned data, writes the composed email under ./email/, and
+           updates the "last sent price" state file
 
     python hanoi_house_price_emailer.py send
         -> reads ./email/* and sends it via Gmail SMTP
 
-WHY MULTIPLE SOURCES
----------------------
+WHY MANY SOURCES, AND WHY THEY'RE SILENTLY SKIPPED
+-----------------------------------------------------
 Vietnamese gold prices have one clean daily aggregator (giavang.org) with a
 simple table per seller. Hanoi housing prices don't have a real
-equivalent - there's no single site with a clean, frequently-updated,
-per-district table. So this script hedges by pulling from more than one
-source and treating each independently: if one site blocks scrapers,
-changes its markup, or goes down, the email still sends with whatever
-other source(s) succeeded, each clearly labeled with where its numbers
-came from (same spirit as the gold script's per-seller error handling -
-one seller failing doesn't take down the whole email).
+equivalent, and several real estate sites front their pages with
+Cloudflare-style bot protection that blocklists cloud/CI IP ranges
+(GitHub Actions runners got a flat 403 from more than one site in
+testing, regardless of headers - that's an IP-range block, not a markup
+problem). So this script:
 
-Current sources:
-  1. Mogi.vn "Giá nhà đất" page - one blended average price/m2 per
-     district (house + land together), with a month-over-month % change.
-     https://mogi.vn/gia-nha-dat
-  2. Batdongsan.com.vn's per-district "nhà mặt phố" (street-front house)
-     pages - a min-max price/m2 range per district, one page per district
-     (see DISTRICT_SLUGS).
-     https://batdongsan.com.vn/ban-nha-mat-pho-{slug}
+  1. Tries a public reader proxy (r.jina.ai) before a direct fetch, since
+     that fetches from different infrastructure than GitHub's runners.
+  2. Treats every source as fully independent and expendable: if a
+     source errors, gets blocked, or its page structure doesn't match
+     what the parser expects, that source is just left out of the email
+     entirely - no error placeholder, no partial-failure noise. The
+     footer lists which sources actually made it into that run.
+  3. Keeps SOURCES as a plain list so adding, removing, or fixing one
+     source doesn't touch the others.
 
-Neither of these is a clean "apartment-only" table - that split doesn't
-appear to exist anywhere as clean scrapable public data (see README.md).
-If a run reports 0 rows for a source, that source's fetch_page() call now
-prints diagnostics (HTTP status, response length, and whether the page
-looks like a JS/anti-bot challenge page rather than real content) to
-stderr - if you hit this, paste that diagnostic output back so the parser
-can be fixed for real rather than guessed at blind.
+Current sources (see SOURCES near the bottom):
+  1. Mogi.vn - blended average price/m2 per district (house + land
+     together), with a month-over-month % change.
+  2-5. Batdongsan.com.vn, one per property type - Nhà mặt phố
+     (street-front houses), Chung cư (apartments), Nhà riêng (regular
+     houses), Đất nền (land) - each a min/max price/m2 range per
+     district. Confirmed working via the reader proxy.
+  6-10. Nhatot.com, Alonhadat.com.vn, Cafeland.vn, Homedy.com, Dothi.net -
+     best-effort generic scans. I have no network access to these sites
+     from where this script was written, so these URLs and the generic
+     parser are an educated guess, not a verified integration - expect
+     some of these to come back empty and get skipped. That's fine, it's
+     what the whole "skip silently" design is for. If you want one of
+     these fixed for real, share the Action log lines for that source
+     (look for its [label] diagnostic lines) and the parser can be
+     adjusted to match what's actually there.
+
+If you find a genuinely reliable apartment-only or house-only aggregator
+for Hanoi, adding it as another SOURCES entry is the way to go - see
+generic_district_scan() for the easiest way to wire one in.
 
 SETUP
 -----
@@ -62,14 +74,8 @@ SETUP
      export SEND_ONLY_ON_CHANGE="false"        # optional, default false
      export TIMEZONE="Asia/Ho_Chi_Minh"        # optional, for the subject line
      export STATE_FILE="state/last_price.json" # optional, dedup state file
+     export USE_READER_PROXY="true"            # optional, default true
      export ALLOW_INSECURE_SSL_FALLBACK="false" # optional, last-resort TLS bypass
-
-NOTE ON SCRAPING
------------------
-Always worth checking the current robots.txt / terms of whatever sites
-this is pointed at before running it unattended long-term, e.g.:
-https://mogi.vn/robots.txt
-https://batdongsan.com.vn/robots.txt
 """
 
 import hashlib
@@ -103,29 +109,17 @@ HEADERS = {
     "Referer": "https://www.google.com/",
 }
 
-# GitHub Actions runners share well-known cloud IP ranges, and Cloudflare-
-# style bot protection (which both of this script's sources appear to use)
-# commonly blocklists those ranges outright - a flat 403 on every single
-# page, regardless of headers, is the signature of that (as opposed to a
-# JS-challenge page, which at least returns a 200 with a puzzle to solve).
-# No amount of header-tweaking fixes an IP-range block. As a workaround,
-# fetch_page() can route the request through a public "reader" proxy
-# (r.jina.ai fetches the page on ITS OWN infrastructure and returns the
-# text - a different IP/fingerprint than GitHub's runners) before falling
-# back to a direct fetch. This is a best-effort workaround, not a
-# guarantee - the underlying sites could just as easily block the proxy's
-# IPs too, or change behavior at any time.
-USE_READER_PROXY = os.environ.get("USE_READER_PROXY", "true").lower() == "true"
-READER_PROXY_PREFIX = os.environ.get("READER_PROXY_PREFIX", "https://r.jina.ai/")
-
 EMAIL_DIR = "email"
 STATE_FILE = os.environ.get("STATE_FILE", "state/last_price.json")
 SEND_ONLY_ON_CHANGE = os.environ.get("SEND_ONLY_ON_CHANGE", "false").lower() == "true"
 ALLOW_INSECURE_SSL_FALLBACK = os.environ.get("ALLOW_INSECURE_SSL_FALLBACK", "false").lower() == "true"
 
-# Text markers that suggest we got a JS/anti-bot challenge page instead of
-# real content (Cloudflare and friends). Not exhaustive, just enough to
-# turn "0 rows, no idea why" into an actionable diagnostic.
+# See the module docstring: a flat 403 regardless of headers is an
+# IP-range block, not fixable by header tweaks - so try fetching from
+# different infrastructure (a public reader proxy) first.
+USE_READER_PROXY = os.environ.get("USE_READER_PROXY", "true").lower() == "true"
+READER_PROXY_PREFIX = os.environ.get("READER_PROXY_PREFIX", "https://r.jina.ai/")
+
 CHALLENGE_MARKERS = [
     "just a moment", "cf-browser-verification", "checking your browser",
     "enable javascript and cookies", "attention required", "cf-chl",
@@ -142,6 +136,30 @@ def norm(s):
     s = s.replace("\xa0", " ")
     s = re.sub(r"\s+", " ", s).strip()
     return unicodedata.normalize("NFC", s)
+
+
+def _flatten_to_lines(content):
+    """Turn either raw HTML (direct fetch) or Markdown (reader-proxy
+    fetch) into a flat list of normalized, non-empty lines. Markdown
+    renders links as "[text](url)" rather than plain text, so those are
+    unwrapped to just their text before normalizing - otherwise
+    line-based matching (e.g. against a district name) would never hit.
+    """
+    if "<html" in content.lower() or "<body" in content.lower() or "<table" in content.lower():
+        soup = BeautifulSoup(content, "html.parser")
+        text = soup.get_text("\n")
+    else:
+        text = content
+
+    lines = []
+    for line in text.split("\n"):
+        m = re.match(r"^\[(.+?)\]\(.*\)$", line.strip())
+        if m:
+            line = m.group(1)
+        line = norm(line)
+        if line:
+            lines.append(line)
+    return lines
 
 
 def load_last_hash(path=STATE_FILE):
@@ -189,26 +207,18 @@ def _direct_fetch(url, label):
     print(f"  [{label}] direct GET {url} -> HTTP {resp.status_code}, {len(resp.text)} bytes", file=sys.stderr)
     hit = _looks_like_challenge(resp.text)
     if hit:
-        print(
-            f"  [{label}] Response contains '{hit}' - looks like a JS/anti-bot "
-            "challenge page.",
-            file=sys.stderr,
-        )
+        print(f"  [{label}] Response contains '{hit}' - looks like a JS/anti-bot challenge page.", file=sys.stderr)
     resp.raise_for_status()
     return resp.text
 
 
 def fetch_page(url, label=""):
-    """GET a page's content, printing diagnostics that actually help
-    (status code, response length, and whether the response looks like a
-    JS/anti-bot challenge) instead of a bare "0 rows parsed".
-
-    Tries a public reader proxy first if USE_READER_PROXY is set (the
-    default) - this fetches the page from different infrastructure than
-    GitHub's runners, which is relevant because a flat 403 on every page
-    regardless of headers is the signature of an IP-range block, not a
-    markup problem. Falls back to a direct fetch if the proxy fails,
-    errors, or itself gets blocked.
+    """GET a page's content, printing diagnostics (status code, response
+    length, anti-bot-challenge detection) instead of a bare failure.
+    Tries a public reader proxy first (different infrastructure than
+    GitHub's runners - relevant since a flat 403 regardless of headers is
+    an IP-range block, not a markup problem), falling back to a direct
+    fetch.
     """
     if USE_READER_PROXY:
         proxied_url = READER_PROXY_PREFIX + url
@@ -225,11 +235,8 @@ def fetch_page(url, label=""):
 
 
 # ---------------------------------------------------------------------------
-# Source 1: Mogi.vn - blended average price/m2 per district, with a
-# month-over-month % change. One page covers every Hanoi district.
+# Shared district list + generic price patterns, reused across sources
 # ---------------------------------------------------------------------------
-
-MOGI_URL = os.environ.get("MOGI_URL", "https://mogi.vn/gia-nha-dat")
 
 HANOI_AREAS = [
     "Quận Ba Đình", "Quận Cầu Giấy", "Quận Đống Đa", "Quận Hai Bà Trưng",
@@ -242,48 +249,44 @@ HANOI_AREAS = [
     "Huyện Phú Xuyên", "Huyện Ứng Hòa",
 ]
 
+DISTRICT_SLUGS = [
+    ("Ba Đình", "ba-dinh"), ("Hoàn Kiếm", "hoan-kiem"), ("Đống Đa", "dong-da"),
+    ("Hai Bà Trưng", "hai-ba-trung"), ("Tây Hồ", "tay-ho"), ("Cầu Giấy", "cau-giay"),
+    ("Thanh Xuân", "thanh-xuan"), ("Hoàng Mai", "hoang-mai"), ("Long Biên", "long-bien"),
+    ("Hà Đông", "ha-dong"), ("Nam Từ Liêm", "nam-tu-liem"), ("Bắc Từ Liêm", "bac-tu-liem"),
+]
+
 PRICE_RE = re.compile(r"([\d][\d.,]*)\s*triệu\s*/\s*m2", re.IGNORECASE)
 PERCENT_RE = re.compile(r"([\d][\d.,]*)\s*%")
 
-
-def _flatten_to_lines(content):
-    """Turn either raw HTML (direct fetch) or Markdown (reader-proxy
-    fetch) into a flat list of normalized, non-empty lines. Markdown
-    renders links as "[text](url)" rather than plain text, so those are
-    unwrapped to just their text before normalizing - otherwise line-based
-    matching (e.g. against a district name) would never hit.
-    """
-    if "<html" in content.lower() or "<body" in content.lower() or "<table" in content.lower():
-        soup = BeautifulSoup(content, "html.parser")
-        text = soup.get_text("\n")
-    else:
-        text = content
-
-    lines = []
-    for line in text.split("\n"):
-        m = re.match(r"^\[(.+?)\]\(.*\)$", line.strip())
-        if m:
-            line = m.group(1)
-        line = norm(line)
-        if line:
-            lines.append(line)
-    return lines
+# e.g. "219 triệu/m² - 2653 tr/m² triệu/m²" (unit repeated after each number)
+BDS_RANGE_RE = re.compile(
+    r"([\d][\d.,]*)\s*(?:triệu|tr)(?:\s*đồng)?\s*/\s*m2?²?\s*-\s*([\d][\d.,]*)\s*(?:tr\s*/\s*m2?²?\s*)?(?:triệu|tr)(?:\s*đồng)?\s*/\s*m2?²?",
+    re.IGNORECASE,
+)
+# e.g. "42 - 81 triệu đồng/m2" (unit stated once, shared, at the end of the range)
+BDS_RANGE_SHARED_UNIT_RE = re.compile(
+    r"([\d][\d.,]*)\s*-\s*([\d][\d.,]*)\s*(?:triệu|tr)(?:\s*đồng)?\s*/\s*m2?²?",
+    re.IGNORECASE,
+)
+# generic catch-all for "some price near a district name", used by the
+# best-effort generic sources - either a single figure or a range.
+GENERIC_PRICE_RE = re.compile(
+    r"[\d][\d.,]*(?:\s*-\s*[\d][\d.,]*)?\s*(?:triệu|tr)(?:\s*đồng)?\s*/\s*m2?²?",
+    re.IGNORECASE,
+)
 
 
-def parse_mogi(html):
-    """Parse Mogi.vn's Hanoi section into [{area, price, change, direction}].
+# ---------------------------------------------------------------------------
+# Source: Mogi.vn - one page, every Hanoi district, blended avg price/m2
+# + month-over-month % change.
+# ---------------------------------------------------------------------------
 
-    Matches by district name against the page's flattened text (more
-    resilient to markup changes than a strict DOM walk), then reads the
-    price + % change off the single line immediately following the
-    district name - that's where mogi.vn renders them together (e.g.
-    "214 triệu/m2  4,9% ▲", or "207 triệu/m2  —" when unchanged). The
-    up/down arrow can land in its own separate line (its own inline tag),
-    so that's checked as a narrow special case, not folded into a
-    multi-line lookahead - an earlier version of this scanned several
-    lines ahead for the % figure, which let one district's change bleed
-    into the row above it.
-    """
+MOGI_URL = os.environ.get("MOGI_URL", "https://mogi.vn/gia-nha-dat")
+
+
+def fetch_mogi():
+    html = fetch_page(MOGI_URL, label="Mogi.vn")
     lines = _flatten_to_lines(html)
     areas_norm = {norm(a): a for a in HANOI_AREAS}
 
@@ -311,48 +314,28 @@ def parse_mogi(html):
     return rows
 
 
-def fetch_mogi():
-    html = fetch_page(MOGI_URL, label="Mogi.vn")
-    return parse_mogi(html)
+def render_change_table(rows):
+    def change_html(change, direction):
+        if not change:
+            return "<span style='color:#999'>—</span>"
+        color = "#1a7f37" if direction == "up" else ("#cf222e" if direction == "down" else "#666")
+        arrow = "▲" if direction == "up" else ("▼" if direction == "down" else "")
+        return f"<span style='color:{color}'>{escape(change)}% {arrow}</span>"
 
-
-def mogi_change_html(change, direction):
-    if not change:
-        return "<span style='color:#999'>—</span>"
-    color = "#1a7f37" if direction == "up" else ("#cf222e" if direction == "down" else "#666")
-    arrow = "▲" if direction == "up" else ("▼" if direction == "down" else "")
-    return f"<span style='color:{color}'>{escape(change)}% {arrow}</span>"
-
-
-def mogi_html_block(rows):
-    if not rows:
-        return f"<p>Could not parse this source this run. Check <a href='{escape(MOGI_URL)}'>{escape(MOGI_URL)}</a> directly.</p>"
     row_html = "\n".join(
-        f"<tr>"
-        f"<td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(r['area'])}</strong></td>"
+        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(r['area'])}</strong></td>"
         f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{escape(r['price'])} triệu/m²</td>"
-        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{mogi_change_html(r['change'], r['direction'])}</td>"
-        f"</tr>"
+        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{change_html(r['change'], r['direction'])}</td></tr>"
         for r in rows
     )
     return f"""
     <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:600px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-    <thead>
-        <tr style="background:#f5f5f5;">
-        <th style="padding:8px 12px;text-align:left;">Quận / Huyện</th>
-        <th style="padding:8px 12px;text-align:right;">Giá trung bình</th>
-        <th style="padding:8px 12px;text-align:right;">So với tháng trước</th>
-        </tr>
-    </thead>
-    <tbody>
-        {row_html}
-    </tbody>
+    <thead><tr style="background:#f5f5f5;"><th style="padding:8px 12px;text-align:left;">Quận / Huyện</th><th style="padding:8px 12px;text-align:right;">Giá trung bình</th><th style="padding:8px 12px;text-align:right;">So với tháng trước</th></tr></thead>
+    <tbody>{row_html}</tbody>
     </table>"""
 
 
-def mogi_text_block(rows):
-    if not rows:
-        return f"Could not parse this source this run. Check {MOGI_URL}"
+def render_change_text(rows):
     lines = []
     for r in rows:
         change_str = f"{r['change']}%" if r["change"] else "—"
@@ -361,118 +344,157 @@ def mogi_text_block(rows):
 
 
 # ---------------------------------------------------------------------------
-# Source 2: Batdongsan.com.vn - one page per district, each giving a
-# min-max price/m2 range for street-front houses ("nhà mặt phố"). Fetching
-# per-district pages (rather than hoping for one summary page) mirrors the
-# gold script's per-seller pattern: one district failing doesn't take
-# down the others.
+# Source: Batdongsan.com.vn, one entry per property type - each fetched
+# per district (mirrors the gold script's per-seller pattern: one
+# district failing doesn't take down the others). Confirmed working via
+# the reader proxy.
 # ---------------------------------------------------------------------------
 
-DISTRICT_SLUGS = [
-    ("Ba Đình", "ba-dinh"),
-    ("Hoàn Kiếm", "hoan-kiem"),
-    ("Đống Đa", "dong-da"),
-    ("Hai Bà Trưng", "hai-ba-trung"),
-    ("Tây Hồ", "tay-ho"),
-    ("Cầu Giấy", "cau-giay"),
-    ("Thanh Xuân", "thanh-xuan"),
-    ("Hoàng Mai", "hoang-mai"),
-    ("Long Biên", "long-bien"),
-    ("Hà Đông", "ha-dong"),
-    ("Nam Từ Liêm", "nam-tu-liem"),
-    ("Bắc Từ Liêm", "bac-tu-liem"),
-]
-
-BATDONGSAN_BASE = os.environ.get("BATDONGSAN_BASE", "https://batdongsan.com.vn/ban-nha-mat-pho-")
-
-# e.g. "219 triệu/m² - 2653 tr/m² triệu/m²" (unit repeated after each number)
-BDS_RANGE_RE = re.compile(
-    r"([\d][\d.,]*)\s*(?:triệu|tr)(?:\s*đồng)?\s*/\s*m2?²?\s*-\s*([\d][\d.,]*)\s*(?:tr\s*/\s*m2?²?\s*)?(?:triệu|tr)(?:\s*đồng)?\s*/\s*m2?²?",
-    re.IGNORECASE,
-)
-# e.g. "42 - 81 triệu đồng/m2" (unit stated once, shared, at the end of the range)
-BDS_RANGE_SHARED_UNIT_RE = re.compile(
-    r"([\d][\d.,]*)\s*-\s*([\d][\d.,]*)\s*(?:triệu|tr)(?:\s*đồng)?\s*/\s*m2?²?",
-    re.IGNORECASE,
-)
-
-
-def parse_batdongsan_district(html):
-    """Pull a min-max price/m2 range for street-front houses out of a
-    batdongsan.com.vn district page. Returns (low, high) strings, or None
-    if no range-shaped text was found. Tries the repeated-unit phrasing
-    first (more specific, avoids false positives from unrelated number
-    ranges on the page), then falls back to the shared-unit-at-the-end
-    phrasing.
-    """
-    soup_text = " ".join(_flatten_to_lines(html))
-    text = norm(soup_text)
-    m = BDS_RANGE_RE.search(text) or BDS_RANGE_SHARED_UNIT_RE.search(text)
-    if not m:
-        return None
-    return m.group(1), m.group(2)
-
-
-def fetch_batdongsan():
+def fetch_batdongsan_category(url_prefix, label):
     rows = []
     for name, slug in DISTRICT_SLUGS:
-        url = f"{BATDONGSAN_BASE}{slug}"
+        url = f"https://batdongsan.com.vn/{url_prefix}-{slug}"
         try:
-            html = fetch_page(url, label=f"Batdongsan.com.vn/{slug}")
-            result = parse_batdongsan_district(html)
+            html = fetch_page(url, label=f"{label}/{slug}")
         except requests.RequestException as e:
-            print(f"  [Batdongsan.com.vn/{slug}] fetch failed: {e}", file=sys.stderr)
-            rows.append({"area": name, "url": url, "error": str(e)})
+            print(f"  [{label}/{slug}] fetch failed: {e}", file=sys.stderr)
             continue
-        if result is None:
-            rows.append({"area": name, "url": url, "error": "Could not parse a price range from this page."})
-        else:
-            rows.append({"area": name, "url": url, "low": result[0], "high": result[1]})
+        text = norm(" ".join(_flatten_to_lines(html)))
+        m = BDS_RANGE_RE.search(text) or BDS_RANGE_SHARED_UNIT_RE.search(text)
+        if not m:
+            print(f"  [{label}/{slug}] no price range found in response - skipping this district.", file=sys.stderr)
+            continue
+        rows.append({"area": name, "low": m.group(1), "high": m.group(2)})
     return rows
 
 
-def batdongsan_html_block(rows):
-    if not rows:
-        return "<p>Could not fetch this source this run.</p>"
-    parts = []
-    for r in rows:
-        if "error" in r:
-            parts.append(
-                f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(r['area'])}</strong></td>"
-                f"<td colspan='2' style='padding:6px 12px;border-bottom:1px solid #eee;color:#a33;font-size:13px'>"
-                f"Không lấy được dữ liệu ({escape(r['error'])}). "
-                f"<a href='{escape(r['url'])}'>Xem trực tiếp</a></td></tr>"
-            )
-        else:
-            parts.append(
-                f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(r['area'])}</strong></td>"
-                f"<td colspan='2' style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>"
-                f"{escape(r['low'])} - {escape(r['high'])} triệu/m²</td></tr>"
-            )
+def render_range_table(rows):
+    row_html = "\n".join(
+        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(r['area'])}</strong></td>"
+        f"<td colspan='2' style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{escape(r['low'])} - {escape(r['high'])} triệu/m²</td></tr>"
+        for r in rows
+    )
     return f"""
     <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:600px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-    <thead>
-        <tr style="background:#f5f5f5;">
-        <th style="padding:8px 12px;text-align:left;">Quận</th>
-        <th colspan="2" style="padding:8px 12px;text-align:right;">Khoảng giá nhà mặt phố</th>
-        </tr>
-    </thead>
-    <tbody>
-        {"".join(parts)}
-    </tbody>
+    <thead><tr style="background:#f5f5f5;"><th style="padding:8px 12px;text-align:left;">Quận</th><th colspan="2" style="padding:8px 12px;text-align:right;">Khoảng giá</th></tr></thead>
+    <tbody>{row_html}</tbody>
     </table>"""
 
 
-def batdongsan_text_block(rows):
-    if not rows:
-        return "Could not fetch this source this run."
-    lines = []
-    for r in rows:
-        if "error" in r:
-            lines.append(f"{r['area']}: khong lay duoc du lieu ({r['error']}). Xem tai {r['url']}")
-        else:
-            lines.append(f"{r['area']}: {r['low']} - {r['high']} trieu/m2")
-    return "\n".join(lines)
+def render_range_text(rows):
+    return "\n".join(f"{r['area']}: {r['low']} - {r['high']} trieu/m2" for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# Best-effort generic sources: scan a Hanoi-wide page for any of our known
+# district names, and grab whatever price-shaped text sits on the next
+# line. These URLs/parsers are educated guesses, not verified
+# integrations - expected to come back empty on some of these, which is
+# fine, they're just skipped.
+# ---------------------------------------------------------------------------
+
+def generic_district_scan(url, label):
+    html = fetch_page(url, label=label)
+    lines = _flatten_to_lines(html)
+    areas_norm = {norm(a): a for a in HANOI_AREAS}
+    rows = []
+    seen = set()
+    for i, line in enumerate(lines):
+        area = areas_norm.get(line)
+        if not area or area in seen or i + 1 >= len(lines):
+            continue
+        m = GENERIC_PRICE_RE.search(lines[i + 1])
+        if not m:
+            continue
+        seen.add(area)
+        rows.append({"area": area, "price_text": m.group(0)})
+    return rows
+
+
+def render_freeform_table(rows):
+    row_html = "\n".join(
+        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(r['area'])}</strong></td>"
+        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{escape(r['price_text'])}</td></tr>"
+        for r in rows
+    )
+    return f"""
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:600px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
+    <thead><tr style="background:#f5f5f5;"><th style="padding:8px 12px;text-align:left;">Quận / Huyện</th><th style="padding:8px 12px;text-align:right;">Giá</th></tr></thead>
+    <tbody>{row_html}</tbody>
+    </table>"""
+
+
+def render_freeform_text(rows):
+    return "\n".join(f"{r['area']}: {r['price_text']}" for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# Source roster - each is fully independent; a failure here just means
+# that entry gets left out of the email (see cmd_generate).
+# ---------------------------------------------------------------------------
+
+SOURCES = [
+    {
+        "name": "Mogi.vn - giá nhà đất bình quân (nhà + đất, gộp)",
+        "fetch": fetch_mogi,
+        "render_html": render_change_table,
+        "render_text": render_change_text,
+    },
+    {
+        "name": "Batdongsan.com.vn - Nhà mặt phố",
+        "fetch": lambda: fetch_batdongsan_category("ban-nha-mat-pho", "Batdongsan/NhaMatPho"),
+        "render_html": render_range_table,
+        "render_text": render_range_text,
+    },
+    {
+        "name": "Batdongsan.com.vn - Chung cư",
+        "fetch": lambda: fetch_batdongsan_category("ban-can-ho-chung-cu", "Batdongsan/ChungCu"),
+        "render_html": render_range_table,
+        "render_text": render_range_text,
+    },
+    {
+        "name": "Batdongsan.com.vn - Nhà riêng",
+        "fetch": lambda: fetch_batdongsan_category("ban-nha-rieng", "Batdongsan/NhaRieng"),
+        "render_html": render_range_table,
+        "render_text": render_range_text,
+    },
+    {
+        "name": "Batdongsan.com.vn - Đất nền",
+        "fetch": lambda: fetch_batdongsan_category("ban-dat", "Batdongsan/DatNen"),
+        "render_html": render_range_table,
+        "render_text": render_range_text,
+    },
+    {
+        "name": "Nhatot.com",
+        "fetch": lambda: generic_district_scan("https://www.nhatot.com/mua-ban-bat-dong-san-ha-noi", "Nhatot.com"),
+        "render_html": render_freeform_table,
+        "render_text": render_freeform_text,
+    },
+    {
+        "name": "Alonhadat.com.vn",
+        "fetch": lambda: generic_district_scan("https://alonhadat.com.vn/nha-dat/ha-noi.html", "Alonhadat.com.vn"),
+        "render_html": render_freeform_table,
+        "render_text": render_freeform_text,
+    },
+    {
+        "name": "Cafeland.vn",
+        "fetch": lambda: generic_district_scan("https://cafeland.vn/du-an/ha-noi/", "Cafeland.vn"),
+        "render_html": render_freeform_table,
+        "render_text": render_freeform_text,
+    },
+    {
+        "name": "Homedy.com",
+        "fetch": lambda: generic_district_scan("https://homedy.com/ban-nha-dat-ha-noi", "Homedy.com"),
+        "render_html": render_freeform_table,
+        "render_text": render_freeform_text,
+    },
+    {
+        "name": "Dothi.net",
+        "fetch": lambda: generic_district_scan("https://dothi.net/nha-dat-ban-ha-noi.htm", "Dothi.net"),
+        "render_html": render_freeform_table,
+        "render_text": render_freeform_text,
+    },
+]
 
 
 # ---------------------------------------------------------------------------
@@ -489,34 +511,48 @@ def resolve_timestamp():
     return now, now.strftime("%H:%M %d/%m/%Y")
 
 
-def build_html(mogi_rows, mogi_ok, bds_rows, bds_ok, timestamp):
-    mogi_section = mogi_html_block(mogi_rows) if mogi_ok else (
-        f"<p>Nguồn này lỗi lần này. Xem <a href='{escape(MOGI_URL)}'>{escape(MOGI_URL)}</a> trực tiếp.</p>"
-    )
-    bds_section = batdongsan_html_block(bds_rows) if bds_ok else (
-        "<p>Nguồn này lỗi lần này.</p>"
-    )
+def run_all_sources():
+    """Try every source; return only the ones that actually produced
+    rows, each as {name, rows, render_html, render_text}. Anything that
+    errors or comes back empty is logged to stderr and left out - no
+    error placeholder in the email itself.
+    """
+    results = []
+    for src in SOURCES:
+        print(f"Fetching: {src['name']} ...")
+        try:
+            rows = src["fetch"]()
+        except Exception as e:
+            print(f"  {src['name']}: failed entirely ({e}) - skipping.", file=sys.stderr)
+            continue
+        if not rows:
+            print(f"  {src['name']}: 0 rows - skipping (see diagnostics above).", file=sys.stderr)
+            continue
+        print(f"  {src['name']}: {len(rows)} row(s).")
+        results.append({"name": src["name"], "rows": rows, "render_html": src["render_html"], "render_text": src["render_text"]})
+    return results
+
+
+def build_html(results, timestamp):
+    if not results:
+        sections = "<p>No source returned data this run. Check the workflow logs.</p>"
+    else:
+        sections = "\n".join(
+            f"""
+  <h2 style="color:#333;font-size:16px;border-bottom:2px solid #1a5fb4;padding-bottom:4px;margin-top:24px;">
+    {escape(r['name'])}
+  </h2>
+  {r['render_html'](r['rows'])}"""
+            for r in results
+        )
     return f"""\
 <html>
 <body style="margin:0; padding:20px; background:#f4f4f4; font-family:Arial,Helvetica,sans-serif;">
   <h1 style="color:#1a5fb4;">Giá nhà đất Hà Nội theo quận/huyện</h1>
   <p style="color:#555;">Cập nhật {escape(timestamp)}</p>
-
-  <h2 style="color:#333;font-size:16px;border-bottom:2px solid #1a5fb4;padding-bottom:4px;">
-    Nguồn 1: Mogi.vn - giá nhà đất bình quân (nhà + đất, gộp)
-  </h2>
-  {mogi_section}
-
-  <h2 style="color:#333;font-size:16px;border-bottom:2px solid #888;padding-bottom:4px;margin-top:24px;">
-    Nguồn 2: Batdongsan.com.vn - khoảng giá nhà mặt phố
-  </h2>
-  {bds_section}
-
+  {sections}
   <p style="color:#999; font-size:12px; margin-top:20px;">
-    Nguồn: <a href="{escape(MOGI_URL)}">{escape(MOGI_URL)}</a> ·
-    <a href="{escape(BATDONGSAN_BASE)}...">batdongsan.com.vn</a> ·
-    Chưa có nguồn công khai, cập nhật thường xuyên, tách riêng theo chung cư -
-    xem README nếu bạn biết một nguồn như vậy ·
+    Nguồn đã lấy được dữ liệu lần này: {escape(", ".join(r["name"] for r in results)) if results else "(không có)"} ·
     Đơn vị: triệu đồng/m² · Email tự động, chỉ mang tính tham khảo, không phải
     lời khuyên đầu tư.
   </p>
@@ -524,13 +560,15 @@ def build_html(mogi_rows, mogi_ok, bds_rows, bds_ok, timestamp):
 </html>"""
 
 
-def build_plain_text(mogi_rows, mogi_ok, bds_rows, bds_ok, timestamp):
+def build_plain_text(results, timestamp):
     lines = [f"Gia nha dat Ha Noi theo quan/huyen - cap nhat {timestamp}", ""]
-    lines.append("== NGUON 1: MOGI.VN (gia nha dat binh quan) ==")
-    lines.append(mogi_text_block(mogi_rows) if mogi_ok else f"Nguon nay loi lan nay. Xem {MOGI_URL}")
-    lines.append("")
-    lines.append("== NGUON 2: BATDONGSAN.COM.VN (khoang gia nha mat pho) ==")
-    lines.append(batdongsan_text_block(bds_rows) if bds_ok else "Nguon nay loi lan nay.")
+    if not results:
+        lines.append("No source returned data this run. Check the workflow logs.")
+    else:
+        for r in results:
+            lines.append(f"== {r['name']} ==")
+            lines.append(r["render_text"](r["rows"]))
+            lines.append("")
     return "\n".join(lines)
 
 
@@ -540,33 +578,14 @@ def cmd_generate():
             os.remove(os.path.join(EMAIL_DIR, f))
     os.makedirs(EMAIL_DIR, exist_ok=True)
 
-    print(f"Fetching source 1: {MOGI_URL} ...")
-    mogi_rows, mogi_ok = [], True
-    try:
-        mogi_rows = fetch_mogi()
-        print(f"  Mogi.vn: parsed {len(mogi_rows)} row(s).")
-        if not mogi_rows:
-            print("  0 rows - see diagnostics above. Page markup may have changed, or Mogi may be blocking this request.", file=sys.stderr)
-    except requests.RequestException as e:
-        print(f"  Mogi.vn: fetch failed entirely: {e}", file=sys.stderr)
-        mogi_ok = False
+    results = run_all_sources()
+    print(f"\n{len(results)}/{len(SOURCES)} source(s) returned data this run.")
 
-    print(f"Fetching source 2: {BATDONGSAN_BASE}{{district}} x{len(DISTRICT_SLUGS)} ...")
-    bds_rows, bds_ok = [], True
-    try:
-        bds_rows = fetch_batdongsan()
-        ok_count = sum(1 for r in bds_rows if "error" not in r)
-        print(f"  Batdongsan.com.vn: {ok_count}/{len(bds_rows)} district(s) OK.")
-    except Exception as e:
-        print(f"  Batdongsan.com.vn: failed entirely: {e}", file=sys.stderr)
-        bds_ok = False
-
-    combined = {"mogi": mogi_rows, "bds": bds_rows}
+    combined = {r["name"]: r["rows"] for r in results}
     price_hash = hash_data(combined)
     last_hash = load_last_hash()
 
-    any_rows = bool(mogi_rows) or any("error" not in r for r in bds_rows)
-    if any_rows and SEND_ONLY_ON_CHANGE and price_hash == last_hash:
+    if results and SEND_ONLY_ON_CHANGE and price_hash == last_hash:
         print("Prices unchanged since last run and SEND_ONLY_ON_CHANGE=true - skipping email.")
         with open(os.path.join(EMAIL_DIR, "meta.json"), "w") as f:
             json.dump({"send": False}, f)
@@ -574,8 +593,8 @@ def cmd_generate():
 
     now, timestamp = resolve_timestamp()
     subject = f"Gia nha dat Ha Noi - {now.strftime('%d/%m/%Y %H:%M')}"
-    html_body = build_html(mogi_rows, mogi_ok, bds_rows, bds_ok, timestamp)
-    text_body = build_plain_text(mogi_rows, mogi_ok, bds_rows, bds_ok, timestamp)
+    html_body = build_html(results, timestamp)
+    text_body = build_plain_text(results, timestamp)
 
     with open(os.path.join(EMAIL_DIR, "subject.txt"), "w") as f:
         f.write(subject)
@@ -584,10 +603,11 @@ def cmd_generate():
     with open(os.path.join(EMAIL_DIR, "body.txt"), "w") as f:
         f.write(text_body)
     with open(os.path.join(EMAIL_DIR, "meta.json"), "w") as f:
-        json.dump({"send": True, "mogi_rows": len(mogi_rows), "bds_rows": len(bds_rows)}, f)
+        json.dump({"send": bool(results), "sources": [r["name"] for r in results]}, f)
 
-    save_last_hash(price_hash)
-    print(f"Generated email (Mogi: {len(mogi_rows)} rows, Batdongsan: {len(bds_rows)} rows). Saved to ./{EMAIL_DIR}/")
+    if results:
+        save_last_hash(price_hash)
+    print(f"Generated email ({len(results)} source(s) included). Saved to ./{EMAIL_DIR}/")
 
 
 def cmd_send():
@@ -611,7 +631,7 @@ def cmd_send():
     with open(meta_path) as f:
         meta = json.load(f)
     if not meta.get("send", False):
-        print("Nothing to send this run (unchanged prices, or generate found no rows).")
+        print("Nothing to send this run (no source returned data, or prices unchanged).")
         return
 
     with open(os.path.join(EMAIL_DIR, "subject.txt")) as f:
