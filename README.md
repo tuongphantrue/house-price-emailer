@@ -35,11 +35,25 @@ in the script are where to wire in a third source.
 **If a run comes back with 0 rows for a source**, `fetch_page()` now prints
 diagnostics to the Action's log: the HTTP status code, response size, and
 whether the response looks like a JS/anti-bot challenge page (Cloudflare
-and similar) rather than real content. If that happens, check the log and
-share it back - that tells us whether it's a markup change (fixable by
-adjusting the parser) or the site blocking scripted requests entirely
-(which would need a different fetching approach, e.g. a headless browser,
-which GitHub Actions' free runners aren't well suited to).
+and similar) rather than real content. A flat `403 Forbidden` on every
+single request, immediately, regardless of headers, is the signature of
+an **IP-range block** - both sources currently do this to GitHub Actions'
+shared runner IPs. No amount of header-tweaking fixes that, since it's
+rejected before the page even renders.
+
+As a workaround, `fetch_page()` tries a public "reader" proxy
+(`r.jina.ai`) first - it fetches the page on its own infrastructure (a
+different IP/fingerprint than GitHub's runners) and returns the text,
+falling back to a direct fetch if that doesn't work either. This is set
+via `USE_READER_PROXY=true` (the default). It's a best-effort workaround,
+not a guarantee - the underlying sites could block the proxy's IPs too, or
+change behavior at any time. If both the proxy and the direct fetch keep
+getting blocked, the realistic remaining options are: running this from a
+non-cloud/residential IP instead of GitHub Actions (e.g. your own
+computer via cron), or a paid scraping API service that maintains
+residential IPs - both add real cost/complexity for what's meant to be a
+simple free digest, worth weighing against just checking prices
+manually.
 
 Also worth knowing: unlike gold, this data does not update every 30
 minutes - Mogi appears to refresh it roughly monthly. Running the workflow
