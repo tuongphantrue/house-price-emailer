@@ -77,14 +77,42 @@ infrastructure (a different IP/fingerprint than GitHub's runners) and
 returns the text, falling back to a direct fetch if that doesn't work
 either. This is set via `USE_READER_PROXY=true` (the default). It's a
 best-effort workaround, not a guarantee - the underlying sites could block
-the proxy's IPs too, or change behavior at any time. If both the proxy
-and the direct fetch keep
-getting blocked, the realistic remaining options are: running this from a
-non-cloud/residential IP instead of GitHub Actions (e.g. your own
-computer via cron), or a paid scraping API service that maintains
-residential IPs - both add real cost/complexity for what's meant to be a
-simple free digest, worth weighing against just checking prices
-manually.
+the proxy's IPs too, or change behavior at any time.
+
+**The reader proxy itself has a request-rate limit.** With 4 Batdongsan
+categories × 12 districts plus Mogi and Nhatot, a run fires off close to
+50 requests - enough to trip a `429 Too Many Requests` on the proxy well
+before any real site is even involved (this happened in testing: Nhà
+riêng, Đất nền, and Nhatot all came back empty purely because they were
+fetched *after* the proxy's budget was already used up by earlier
+categories, not because those sites were blocking anything). To handle
+this, `fetch_page()` retries a `429` with backoff (`READER_PROXY_MAX_RETRIES`,
+default 3; `READER_PROXY_BACKOFF_SECONDS`, default 4, multiplied by the
+attempt number) before falling back to a direct fetch, and paces every
+request with a small delay (`READER_PROXY_PACING_SECONDS`, default 1.5s)
+to avoid tripping the limit in the first place. This does mean a full run
+now takes noticeably longer (several minutes rather than seconds) -
+that's expected and fine for a scheduled background job with no time
+pressure.
+
+A "successful" (`200`, non-challenge) response that's suspiciously short
+is also not trusted at face value - real district/category pages run
+tens of KB; a response of only a few KB (this happened with Mogi.vn:
+`200, 6346 bytes` but 0 rows parsed - far short of the 70-90KB a real
+page runs) is more likely a stub or truncated render than the actual
+content, so that case now falls through to a direct fetch too rather than
+being silently accepted as "fetched fine, just empty". The threshold is
+`READER_PROXY_MIN_BYTES` (default 10000). If a source still comes back
+empty after all that, `fetch_mogi()` in particular now logs a text
+snippet of whatever it did receive, so a repeat failure gives something
+concrete to debug rather than another guess.
+
+If a source still comes back empty even after retries and pacing, the
+realistic remaining options are: running this from a non-cloud/residential
+IP instead of GitHub Actions (e.g. your own computer via cron), or a paid
+scraping API service that maintains residential IPs - both add real
+cost/complexity for what's meant to be a simple free digest, worth
+weighing against just checking prices manually.
 
 Also worth knowing: unlike gold, this data does not update every 30
 minutes - Mogi appears to refresh it roughly monthly. Running the workflow
