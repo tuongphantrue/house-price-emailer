@@ -12,16 +12,34 @@ public site that publishes a clean, structured, frequently-updated table
 split out by property type (house vs. apartment vs. land) the way
 giavang.org does for gold sellers.
 
-The one source found that's server-rendered and table-shaped is Mogi.vn's
-[Giá nhà đất](https://mogi.vn/gia-nha-dat) page. It gives one **blended**
-average price/m² per district (houses + land together), with a
-month-over-month % change - not split into a separate "apartment" table.
-Real per-district apartment breakdowns on other sites (batdongsan.com.vn,
-Mogi's own per-district detail pages) are either loaded via JavaScript
-after the page loads, or buried as prose inside SEO articles - neither is
-something a plain HTTP scraper can reliably read. If you find a clean
-source for that split, `parse_hanoi_table()` in the script is where to
-wire it in.
+Because of that, this script pulls from **two independent sources** and
+treats them separately, so one site blocking scrapers or changing its
+markup doesn't take the whole email down - the same idea as the gold
+script's per-seller error handling, just applied across sources instead of
+sellers within one source:
+
+1. **Mogi.vn** ([gia-nha-dat](https://mogi.vn/gia-nha-dat)) - one blended
+   average price/m² per district (house + land together), with a
+   month-over-month % change. One page covers every Hanoi district.
+2. **Batdongsan.com.vn** - a min/max price/m² range for street-front
+   houses ("nhà mặt phố"), fetched one page per district, for the 12 main
+   urban districts (outlying huyện don't appear to have this page type).
+
+Neither of these is an apartment-only table - a clean, scrapable,
+public source split out that way doesn't seem to exist (real per-district
+apartment breakdowns are loaded via JavaScript after the page loads, or
+buried as prose in SEO articles, neither of which a plain HTTP scraper can
+reliably read). If you find one, `parse_mogi` / `parse_batdongsan_district`
+in the script are where to wire in a third source.
+
+**If a run comes back with 0 rows for a source**, `fetch_page()` now prints
+diagnostics to the Action's log: the HTTP status code, response size, and
+whether the response looks like a JS/anti-bot challenge page (Cloudflare
+and similar) rather than real content. If that happens, check the log and
+share it back - that tells us whether it's a markup change (fixable by
+adjusting the parser) or the site blocking scripted requests entirely
+(which would need a different fetching approach, e.g. a headless browser,
+which GitHub Actions' free runners aren't well suited to).
 
 Also worth knowing: unlike gold, this data does not update every 30
 minutes - Mogi appears to refresh it roughly monthly. Running the workflow
@@ -104,14 +122,16 @@ nothing changed.
 - You can also trigger it manually anytime via the "Run workflow" button.
 - If the run fails, check the Actions tab -> the failed run -> logs. Common
   causes: a secret is missing/misspelled, the Gmail app password was
-  revoked, or mogi.vn changed its page markup (see below).
-- If a run reports "Parsed 0 rows", the site's HTML structure probably
-  changed. Open <https://mogi.vn/gia-nha-dat>, check the Hanoi section
-  still lists each district's name followed by a "NN triệu/m2" price and a
-  "N,N%" change, and adjust `parse_hanoi_table` in
-  `hanoi_house_price_emailer.py` to match.
+  revoked, or a source's page markup/anti-bot behavior changed (see below).
+- If a run reports 0 rows for a source, check that source's diagnostic
+  lines in the log (HTTP status, response size, and a note if the response
+  looks like a JS/anti-bot challenge page). Open the source URL yourself
+  in a browser to compare against what the log shows, and adjust
+  `parse_mogi` / `parse_batdongsan_district` in
+  `hanoi_house_price_emailer.py` if the page structure changed.
 - Always worth checking the current `robots.txt` / terms before running
-  this unattended long-term: <https://mogi.vn/robots.txt>
+  this unattended long-term:
+  <https://mogi.vn/robots.txt> and <https://batdongsan.com.vn/robots.txt>
 
 ## Running locally instead
 
