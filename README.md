@@ -1,30 +1,28 @@
 # Hanoi House/Land Price Emailer (runs on GitHub Actions, no local computer needed)
 
 Emails you house/land prices for Hanoi by district (quận) and rural
-district (huyện), pulled from up to 10 independent sources, automatically
-via GitHub's free scheduled-workflow runners.
+district (huyện), pulled from 6 independent, verified sources,
+automatically via GitHub's free scheduled-workflow runners.
 
 ## Important: read this before relying on it
 
 Gold prices have a clean daily aggregator site with one simple table per
-seller. **Hanoi housing prices don't have a real equivalent.** There's no
-public site that publishes a clean, structured, frequently-updated table
-split out by property type (house vs. apartment vs. land) the way
-giavang.org does for gold sellers. On top of that, some real estate sites
-front their pages with Cloudflare-style protection that blocklists
-GitHub Actions' shared runner IPs outright (confirmed via testing: a flat
-`403 Forbidden` on every single request, regardless of headers - that's
-an IP-range block, not a markup problem, and no amount of header-tweaking
-fixes it).
+seller. **Hanoi housing prices don't have a real equivalent.** Most
+Vietnamese real estate sites are raw listing boards (individual asking
+prices, no computed average), some front their pages with Cloudflare-style
+protection that blocklists GitHub Actions' shared runner IPs outright
+(confirmed via testing: a flat `403 Forbidden` on every single request,
+regardless of headers), and at least one genuinely good source
+(guland.vn) explicitly disallows automated access in its `robots.txt` -
+respected here on principle, not worked around.
 
-Given that, this script hedges hard: it tries **10 independent sources**,
-and treats every one of them as fully expendable - if a source errors,
-gets blocked, or its page structure doesn't match what the parser
-expects, it's silently left out of that run's email. No error
-placeholders, no partial-failure noise - just whatever sources actually
-came through, each in its own clearly labeled section, with a footer
-listing which ones made it in. If literally none come through, no email
-gets sent at all rather than sending an empty one.
+Given that, this script treats every source as fully independent and
+expendable - if a source errors, gets blocked, or its page structure
+doesn't match what the parser expects, it's silently left out of that
+run's email. No error placeholders, no partial-failure noise - just
+whatever sources actually came through, each in its own clearly labeled
+section, with a footer listing which ones made it in. If literally none
+come through, no email gets sent at all rather than sending an empty one.
 
 1. **Mogi.vn** ([gia-nha-dat](https://mogi.vn/gia-nha-dat)) - one blended
    average price/m² per district (house + land together), with a
@@ -37,16 +35,21 @@ gets sent at all rather than sending an empty one.
    - Chung cư (apartments) - the one genuinely separate apartment table
    - Nhà riêng (regular houses)
    - Đất nền (land)
-6-10. **Nhatot.com, Alonhadat.com.vn, Cafeland.vn, Homedy.com, Dothi.net**
-   - best-effort generic scans, added for extra redundancy. These are
-     educated-guess URLs and a generic parser, not verified integrations -
-     don't be surprised if some of these consistently come back empty,
-     that's expected and harmless given the "just skip it" design. If you
-     want one fixed for real, check that source's `[label]` diagnostic
-     lines in the Action's log and share them back.
+6. **Nhatot.com** - city-wide average price/m² by property type (Nhà
+   riêng, Nhà phố, Nhà mặt tiền, Chung cư). One of the few sites that
+   actually publishes a computed average rather than just listing prices.
 
-If you find a source and it's not wired in, `generic_district_scan()` in
-the script is the easiest way to add one - it just needs a URL.
+**Sites checked and deliberately left out**, rather than added as
+speculative entries that would just come back empty every run:
+   alonhadat.com.vn, cafeland.vn, dothi.net, and homedy.com only publish
+   individual listing prices - there's no computed district or city
+   average anywhere on them for a parser to extract. guland.vn does
+   publish real per-district averages, but its `robots.txt` disallows
+   automated access, so it's excluded regardless of technical
+   feasibility. If you know of a genuinely different aggregator (with
+   real computed averages, not just listings), that's the kind of thing
+   worth adding - `fetch_nhatot()` or `fetch_batdongsan_category()` in
+   the script are good examples of how a source is wired in.
 
 ## Typical total price section
 
