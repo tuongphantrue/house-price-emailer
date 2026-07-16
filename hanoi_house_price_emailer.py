@@ -42,19 +42,24 @@ Current sources (see SOURCES near the bottom):
      (street-front houses), Chung cư (apartments), Nhà riêng (regular
      houses), Đất nền (land) - each a min/max price/m2 range per
      district. Confirmed working via the reader proxy.
-  6-10. Nhatot.com, Alonhadat.com.vn, Cafeland.vn, Homedy.com, Dothi.net -
-     best-effort generic scans. I have no network access to these sites
-     from where this script was written, so these URLs and the generic
-     parser are an educated guess, not a verified integration - expect
-     some of these to come back empty and get skipped. That's fine, it's
-     what the whole "skip silently" design is for. If you want one of
-     these fixed for real, share the Action log lines for that source
-     (look for its [label] diagnostic lines) and the parser can be
-     adjusted to match what's actually there.
+  6. Nhatot.com - city-wide average price/m2 by property type (Nhà
+     riêng, Nhà phố, Nhà mặt tiền, Chung cư). Genuinely publishes
+     computed averages, unlike most listing sites.
 
-If you find a genuinely reliable apartment-only or house-only aggregator
-for Hanoi, adding it as another SOURCES entry is the way to go - see
-generic_district_scan() for the easiest way to wire one in.
+Several other well-known sites were checked and deliberately left out,
+rather than added as speculative entries that would just come back
+empty every run:
+  - alonhadat.com.vn, cafeland.vn, dothi.net, homedy.com - only publish
+    individual listing prices, no computed district/city average. There's
+    nothing for a parser to reliably extract from these.
+  - guland.vn - does publish per-district averages, but its robots.txt
+    disallows automated access, so it's excluded on principle regardless
+    of technical feasibility.
+
+If you find a genuinely reliable apartment-only, house-only, or
+per-district aggregator for Hanoi beyond what's listed above, adding it
+as another SOURCES entry is the way to go - see fetch_nhatot() or
+fetch_batdongsan_category() for examples of how a source is wired in.
 
 SETUP
 -----
@@ -269,12 +274,6 @@ BDS_RANGE_SHARED_UNIT_RE = re.compile(
     r"([\d][\d.,]*)\s*-\s*([\d][\d.,]*)\s*(?:triệu|tr)(?:\s*đồng)?\s*/\s*m2?²?",
     re.IGNORECASE,
 )
-# generic catch-all for "some price near a district name", used by the
-# best-effort generic sources - either a single figure or a range.
-GENERIC_PRICE_RE = re.compile(
-    r"[\d][\d.,]*(?:\s*-\s*[\d][\d.,]*)?\s*(?:triệu|tr)(?:\s*đồng)?\s*/\s*m2?²?",
-    re.IGNORECASE,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -386,56 +385,92 @@ def render_range_text(rows):
 
 
 # ---------------------------------------------------------------------------
-# Best-effort generic sources: scan a Hanoi-wide page for any of our known
-# district names, and grab whatever price-shaped text sits on the next
-# line. These URLs/parsers are educated guesses, not verified
-# integrations - expected to come back empty on some of these, which is
-# fine, they're just skipped.
+# Source: Nhatot.com (Chợ Tốt Nhà) - publishes actual computed category
+# averages city-wide (unlike most listing sites, which only show
+# individual asking prices with no aggregate). Confirmed via manual
+# research; the site also has bot detection, so this relies on the
+# reader-proxy path like the others.
 # ---------------------------------------------------------------------------
 
-def generic_district_scan(url, label):
-    html = fetch_page(url, label=label)
-    lines = _flatten_to_lines(html)
-    areas_norm = {norm(a): a for a in HANOI_AREAS}
+NHATOT_URL = os.environ.get("NHATOT_URL", "https://www.nhatot.com/mua-ban-nha-dat-ha-noi")
+
+# e.g. "Nhà mặt tiền Hà Nội: 200 triệu – 1 tỷ/m²" or "Nhà phố Hà Nội: 120 – 350 triệu/m²"
+NHATOT_CATEGORY_RE = re.compile(
+    r"(Nhà riêng, nhà nguyên căn|Nhà phố|Nhà mặt tiền|Chung cư)\s+Hà Nội:\s*"
+    r"([\d][\d.,]*)\s*(triệu|tỷ)?\s*[–\-]\s*([\d][\d.,]*)\s*(triệu|tỷ)\s*/\s*m",
+    re.IGNORECASE,
+)
+
+
+def _to_trieu(num_str, unit):
+    val = _vn_to_float(num_str)
+    return val * 1000 if unit == "tỷ" else val
+
+
+def fetch_nhatot():
+    html = fetch_page(NHATOT_URL, label="Nhatot.com")
+    text = norm(" ".join(_flatten_to_lines(html)))
     rows = []
-    seen = set()
-    for i, line in enumerate(lines):
-        area = areas_norm.get(line)
-        if not area or area in seen or i + 1 >= len(lines):
-            continue
-        m = GENERIC_PRICE_RE.search(lines[i + 1])
-        if not m:
-            continue
-        seen.add(area)
-        rows.append({"area": area, "price_text": m.group(0)})
+    for m in NHATOT_CATEGORY_RE.finditer(text):
+        label, num1, unit1, num2, unit2 = m.groups()
+        unit1 = unit1 or unit2  # first number often shares the second's unit
+        low = _to_trieu(num1, unit1)
+        high = _to_trieu(num2, unit2)
+        rows.append({"area": label.strip(), "low": f"{low:.0f}", "high": f"{high:.0f}"})
     return rows
 
 
-def render_freeform_table(rows):
-    row_html = "\n".join(
-        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(r['area'])}</strong></td>"
-        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{escape(r['price_text'])}</td></tr>"
-        for r in rows
-    )
-    return f"""
-    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:600px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-    <thead><tr style="background:#f5f5f5;"><th style="padding:8px 12px;text-align:left;">Quận / Huyện</th><th style="padding:8px 12px;text-align:right;">Giá</th></tr></thead>
-    <tbody>{row_html}</tbody>
-    </table>"""
-
-
-def render_freeform_text(rows):
-    return "\n".join(f"{r['area']}: {r['price_text']}" for r in rows)
-
-
 # ---------------------------------------------------------------------------
-# "Typical price" summary - derived from the per-m2 data already fetched
-# above, not a new source. Multiplies each category's city-wide average
-# price/m2 by a few common house/apartment sizes to give an illustrative
-# total price (e.g. "a typical 50m2 nhà mặt phố costs about X - Y tỷ").
-# This is arithmetic on real fetched numbers, not a separate scrape - so
-# it only shows up for whichever categories actually had data this run.
+# Source roster - each is fully independent; a failure here just means
+# that entry gets left out of the email (see cmd_generate).
+#
+# Only sources with verified, real aggregate data are listed here. Several
+# other well-known sites were checked and dropped: alonhadat.com.vn,
+# cafeland.vn, dothi.net, and homedy.com only publish individual listing
+# prices with no computed average - there's nothing for a parser to
+# reliably extract. guland.vn does publish per-district averages, but its
+# robots.txt disallows automated access, so it's excluded on principle
+# regardless of technical feasibility.
 # ---------------------------------------------------------------------------
+
+SOURCES = [
+    {
+        "name": "Mogi.vn - giá nhà đất bình quân (nhà + đất, gộp)",
+        "fetch": fetch_mogi,
+        "render_html": render_change_table,
+        "render_text": render_change_text,
+    },
+    {
+        "name": "Batdongsan.com.vn - Nhà mặt phố",
+        "fetch": lambda: fetch_batdongsan_category("ban-nha-mat-pho", "Batdongsan/NhaMatPho"),
+        "render_html": render_range_table,
+        "render_text": render_range_text,
+    },
+    {
+        "name": "Batdongsan.com.vn - Chung cư",
+        "fetch": lambda: fetch_batdongsan_category("ban-can-ho-chung-cu", "Batdongsan/ChungCu"),
+        "render_html": render_range_table,
+        "render_text": render_range_text,
+    },
+    {
+        "name": "Batdongsan.com.vn - Nhà riêng",
+        "fetch": lambda: fetch_batdongsan_category("ban-nha-rieng", "Batdongsan/NhaRieng"),
+        "render_html": render_range_table,
+        "render_text": render_range_text,
+    },
+    {
+        "name": "Batdongsan.com.vn - Đất nền",
+        "fetch": lambda: fetch_batdongsan_category("ban-dat", "Batdongsan/DatNen"),
+        "render_html": render_range_table,
+        "render_text": render_range_text,
+    },
+    {
+        "name": "Nhatot.com - giá theo loại hình (toàn Hà Nội)",
+        "fetch": fetch_nhatot,
+        "render_html": render_range_table,
+        "render_text": render_range_text,
+    },
+]
 
 TYPICAL_SIZES_M2 = [30, 50, 70, 100]
 
@@ -533,75 +568,6 @@ def render_typical_price_text(typical):
         lines.append(f"{t['label']}: {parts}")
     lines.append("(Tinh tu gia trung binh/m2 nhan voi dien tich tham khao - chi mang tinh minh hoa.)")
     return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Source roster - each is fully independent; a failure here just means
-# that entry gets left out of the email (see cmd_generate).
-# ---------------------------------------------------------------------------
-
-SOURCES = [
-    {
-        "name": "Mogi.vn - giá nhà đất bình quân (nhà + đất, gộp)",
-        "fetch": fetch_mogi,
-        "render_html": render_change_table,
-        "render_text": render_change_text,
-    },
-    {
-        "name": "Batdongsan.com.vn - Nhà mặt phố",
-        "fetch": lambda: fetch_batdongsan_category("ban-nha-mat-pho", "Batdongsan/NhaMatPho"),
-        "render_html": render_range_table,
-        "render_text": render_range_text,
-    },
-    {
-        "name": "Batdongsan.com.vn - Chung cư",
-        "fetch": lambda: fetch_batdongsan_category("ban-can-ho-chung-cu", "Batdongsan/ChungCu"),
-        "render_html": render_range_table,
-        "render_text": render_range_text,
-    },
-    {
-        "name": "Batdongsan.com.vn - Nhà riêng",
-        "fetch": lambda: fetch_batdongsan_category("ban-nha-rieng", "Batdongsan/NhaRieng"),
-        "render_html": render_range_table,
-        "render_text": render_range_text,
-    },
-    {
-        "name": "Batdongsan.com.vn - Đất nền",
-        "fetch": lambda: fetch_batdongsan_category("ban-dat", "Batdongsan/DatNen"),
-        "render_html": render_range_table,
-        "render_text": render_range_text,
-    },
-    {
-        "name": "Nhatot.com",
-        "fetch": lambda: generic_district_scan("https://www.nhatot.com/mua-ban-bat-dong-san-ha-noi", "Nhatot.com"),
-        "render_html": render_freeform_table,
-        "render_text": render_freeform_text,
-    },
-    {
-        "name": "Alonhadat.com.vn",
-        "fetch": lambda: generic_district_scan("https://alonhadat.com.vn/nha-dat/ha-noi.html", "Alonhadat.com.vn"),
-        "render_html": render_freeform_table,
-        "render_text": render_freeform_text,
-    },
-    {
-        "name": "Cafeland.vn",
-        "fetch": lambda: generic_district_scan("https://cafeland.vn/du-an/ha-noi/", "Cafeland.vn"),
-        "render_html": render_freeform_table,
-        "render_text": render_freeform_text,
-    },
-    {
-        "name": "Homedy.com",
-        "fetch": lambda: generic_district_scan("https://homedy.com/ban-nha-dat-ha-noi", "Homedy.com"),
-        "render_html": render_freeform_table,
-        "render_text": render_freeform_text,
-    },
-    {
-        "name": "Dothi.net",
-        "fetch": lambda: generic_district_scan("https://dothi.net/nha-dat-ban-ha-noi.htm", "Dothi.net"),
-        "render_html": render_freeform_table,
-        "render_text": render_freeform_text,
-    },
-]
 
 
 # ---------------------------------------------------------------------------
