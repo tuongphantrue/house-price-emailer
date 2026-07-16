@@ -48,6 +48,21 @@ gets sent at all rather than sending an empty one.
 If you find a source and it's not wired in, `generic_district_scan()` in
 the script is the easiest way to add one - it just needs a URL.
 
+## Typical total price section
+
+Below the per-district tables, the email adds a "Giá nhà điển hình tại
+Hà Nội" (typical house prices) section - this isn't a new scrape, it's
+arithmetic on the per-m² data already fetched: for each category (nhà mặt
+phố, chung cư, nhà riêng, đất nền, and Mogi's blended average), it
+averages that category's price/m² across whichever districts came back
+this run, then multiplies by a few common sizes (30/50/70/100 m²) to give
+an illustrative total price (e.g. "a typical 50m² chung cư costs about
+2.25 - 4.5 tỷ"). It only shows categories that actually had data that run,
+and it's explicitly labeled as an illustration, not the real price of any
+specific property - actual prices depend heavily on exact location,
+frontage, legal status, and condition. To change the reference sizes,
+edit `TYPICAL_SIZES_M2` near the top of `hanoi_house_price_emailer.py`.
+
 **If a run comes back with 0 rows for a source**, `fetch_page()` prints
 diagnostics to the Action's log: the HTTP status code, response size, and
 whether the response looks like a JS/anti-bot challenge page (Cloudflare
