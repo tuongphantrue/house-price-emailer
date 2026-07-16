@@ -429,6 +429,113 @@ def render_freeform_text(rows):
 
 
 # ---------------------------------------------------------------------------
+# "Typical price" summary - derived from the per-m2 data already fetched
+# above, not a new source. Multiplies each category's city-wide average
+# price/m2 by a few common house/apartment sizes to give an illustrative
+# total price (e.g. "a typical 50m2 nhà mặt phố costs about X - Y tỷ").
+# This is arithmetic on real fetched numbers, not a separate scrape - so
+# it only shows up for whichever categories actually had data this run.
+# ---------------------------------------------------------------------------
+
+TYPICAL_SIZES_M2 = [30, 50, 70, 100]
+
+# Maps a SOURCES entry's name to how it should appear in this summary, and
+# how to read its rows (range = has low/high; point = has a single price).
+TYPICAL_PRICE_CATEGORIES = {
+    "Mogi.vn - giá nhà đất bình quân (nhà + đất, gộp)": ("Nhà đất bình quân (nhà + đất)", "point"),
+    "Batdongsan.com.vn - Nhà mặt phố": ("Nhà mặt phố", "range"),
+    "Batdongsan.com.vn - Chung cư": ("Chung cư (căn hộ)", "range"),
+    "Batdongsan.com.vn - Nhà riêng": ("Nhà riêng", "range"),
+    "Batdongsan.com.vn - Đất nền": ("Đất nền (đất)", "range"),
+}
+
+
+def _vn_to_float(s):
+    # Values seen so far are plain integers or a decimal comma (e.g.
+    # "3,5"), never a thousands separator - triệu/m2 magnitudes stay well
+    # under that range. If a source ever sends "1.234,5" style numbers
+    # this will need a thousands-separator-aware version.
+    return float(s.replace(",", "."))
+
+
+def _format_money_trieu(trieu):
+    if trieu >= 1000:
+        ty = f"{trieu / 1000:.2f}".rstrip("0").rstrip(".")
+        return f"{ty} tỷ"
+    return f"{trieu:.0f} triệu"
+
+
+def compute_typical_prices(results):
+    """Return [{"label": ..., "kind": "range"|"point", "per_m2": (low, high) or price, "sizes": {size: text}}]
+    for whichever categories in TYPICAL_PRICE_CATEGORIES actually have
+    data this run. City-wide per-m2 figures are the average across
+    whatever districts that source returned (not every district
+    necessarily reported, if some were skipped) - so treat this as a
+    rough illustration, not a precise citywide average.
+    """
+    out = []
+    for r in results:
+        mapping = TYPICAL_PRICE_CATEGORIES.get(r["name"])
+        if not mapping:
+            continue
+        label, kind = mapping
+        rows = r["rows"]
+        if kind == "range":
+            lows = [_vn_to_float(x["low"]) for x in rows if "low" in x]
+            highs = [_vn_to_float(x["high"]) for x in rows if "high" in x]
+            if not lows or not highs:
+                continue
+            avg_low, avg_high = sum(lows) / len(lows), sum(highs) / len(highs)
+            sizes = {
+                size: f"{_format_money_trieu(avg_low * size)} - {_format_money_trieu(avg_high * size)}"
+                for size in TYPICAL_SIZES_M2
+            }
+            out.append({"label": label, "kind": kind, "per_m2": (avg_low, avg_high), "sizes": sizes})
+        else:
+            prices = [_vn_to_float(x["price"]) for x in rows if "price" in x]
+            if not prices:
+                continue
+            avg_price = sum(prices) / len(prices)
+            sizes = {size: _format_money_trieu(avg_price * size) for size in TYPICAL_SIZES_M2}
+            out.append({"label": label, "kind": kind, "per_m2": avg_price, "sizes": sizes})
+    return out
+
+
+def render_typical_price_html(typical):
+    if not typical:
+        return ""
+    header_cells = "".join(f"<th style='padding:8px 12px;text-align:right;'>{size} m²</th>" for size in TYPICAL_SIZES_M2)
+    body_rows = "\n".join(
+        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(t['label'])}</strong></td>"
+        + "".join(f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{escape(t['sizes'][size])}</td>" for size in TYPICAL_SIZES_M2)
+        + "</tr>"
+        for t in typical
+    )
+    return f"""
+  <h2 style="color:#333;font-size:16px;border-bottom:2px solid #1a5fb4;padding-bottom:4px;margin-top:24px;">
+    Giá nhà điển hình tại Hà Nội (ước tính)
+  </h2>
+  <p style="color:#666;font-size:13px;">
+    Tính từ giá trung bình/m² ở trên nhân với diện tích tham khảo - chỉ mang tính minh họa, không phải giá thực tế của một căn nhà cụ thể.
+  </p>
+  <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:600px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
+  <thead><tr style="background:#f5f5f5;"><th style="padding:8px 12px;text-align:left;">Loại hình</th>{header_cells}</tr></thead>
+  <tbody>{body_rows}</tbody>
+  </table>"""
+
+
+def render_typical_price_text(typical):
+    if not typical:
+        return ""
+    lines = ["== GIA NHA DIEN HINH TAI HA NOI (uoc tinh) =="]
+    for t in typical:
+        parts = ", ".join(f"{size}m2: {t['sizes'][size]}" for size in TYPICAL_SIZES_M2)
+        lines.append(f"{t['label']}: {parts}")
+    lines.append("(Tinh tu gia trung binh/m2 nhan voi dien tich tham khao - chi mang tinh minh hoa.)")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Source roster - each is fully independent; a failure here just means
 # that entry gets left out of the email (see cmd_generate).
 # ---------------------------------------------------------------------------
@@ -545,12 +652,14 @@ def build_html(results, timestamp):
   {r['render_html'](r['rows'])}"""
             for r in results
         )
+    typical_section = render_typical_price_html(compute_typical_prices(results))
     return f"""\
 <html>
 <body style="margin:0; padding:20px; background:#f4f4f4; font-family:Arial,Helvetica,sans-serif;">
   <h1 style="color:#1a5fb4;">Giá nhà đất Hà Nội theo quận/huyện</h1>
   <p style="color:#555;">Cập nhật {escape(timestamp)}</p>
   {sections}
+  {typical_section}
   <p style="color:#999; font-size:12px; margin-top:20px;">
     Nguồn đã lấy được dữ liệu lần này: {escape(", ".join(r["name"] for r in results)) if results else "(không có)"} ·
     Đơn vị: triệu đồng/m² · Email tự động, chỉ mang tính tham khảo, không phải
@@ -569,6 +678,9 @@ def build_plain_text(results, timestamp):
             lines.append(f"== {r['name']} ==")
             lines.append(r["render_text"](r["rows"]))
             lines.append("")
+        typical_text = render_typical_price_text(compute_typical_prices(results))
+        if typical_text:
+            lines.append(typical_text)
     return "\n".join(lines)
 
 
