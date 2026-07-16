@@ -100,7 +100,23 @@ HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml",
     "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://www.google.com/",
 }
+
+# GitHub Actions runners share well-known cloud IP ranges, and Cloudflare-
+# style bot protection (which both of this script's sources appear to use)
+# commonly blocklists those ranges outright - a flat 403 on every single
+# page, regardless of headers, is the signature of that (as opposed to a
+# JS-challenge page, which at least returns a 200 with a puzzle to solve).
+# No amount of header-tweaking fixes an IP-range block. As a workaround,
+# fetch_page() can route the request through a public "reader" proxy
+# (r.jina.ai fetches the page on ITS OWN infrastructure and returns the
+# text - a different IP/fingerprint than GitHub's runners) before falling
+# back to a direct fetch. This is a best-effort workaround, not a
+# guarantee - the underlying sites could just as easily block the proxy's
+# IPs too, or change behavior at any time.
+USE_READER_PROXY = os.environ.get("USE_READER_PROXY", "true").lower() == "true"
+READER_PROXY_PREFIX = os.environ.get("READER_PROXY_PREFIX", "https://r.jina.ai/")
 
 EMAIL_DIR = "email"
 STATE_FILE = os.environ.get("STATE_FILE", "state/last_price.json")
@@ -150,12 +166,12 @@ def hash_data(data):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def fetch_page(url, label=""):
-    """GET a page, verifying TLS against certifi's CA bundle explicitly,
-    and print diagnostics that actually help next time instead of a bare
-    "0 rows parsed": status code, response length, and whether the page
-    text looks like a JS/anti-bot challenge rather than real content.
-    """
+def _looks_like_challenge(text):
+    lowered = text.lower()
+    return next((m for m in CHALLENGE_MARKERS if m in lowered), None)
+
+
+def _direct_fetch(url, label):
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15, verify=certifi.where())
     except requests.exceptions.SSLError as e:
@@ -170,19 +186,42 @@ def fetch_page(url, label=""):
         print(f"  [{label}] ALLOW_INSECURE_SSL_FALLBACK=true - retrying without TLS verification.", file=sys.stderr)
         resp = requests.get(url, headers=HEADERS, timeout=15, verify=False)
 
-    print(f"  [{label}] GET {url} -> HTTP {resp.status_code}, {len(resp.text)} bytes", file=sys.stderr)
-    lowered = resp.text.lower()
-    hit = next((m for m in CHALLENGE_MARKERS if m in lowered), None)
+    print(f"  [{label}] direct GET {url} -> HTTP {resp.status_code}, {len(resp.text)} bytes", file=sys.stderr)
+    hit = _looks_like_challenge(resp.text)
     if hit:
         print(
-            f"  [{label}] Response contains '{hit}' - this looks like a JS/anti-bot "
-            "challenge page, not real content. Plain HTTP scraping likely won't work "
-            "for this source without changes (different headers/cookies/session, or "
-            "a headless-browser fetch).",
+            f"  [{label}] Response contains '{hit}' - looks like a JS/anti-bot "
+            "challenge page.",
             file=sys.stderr,
         )
     resp.raise_for_status()
     return resp.text
+
+
+def fetch_page(url, label=""):
+    """GET a page's content, printing diagnostics that actually help
+    (status code, response length, and whether the response looks like a
+    JS/anti-bot challenge) instead of a bare "0 rows parsed".
+
+    Tries a public reader proxy first if USE_READER_PROXY is set (the
+    default) - this fetches the page from different infrastructure than
+    GitHub's runners, which is relevant because a flat 403 on every page
+    regardless of headers is the signature of an IP-range block, not a
+    markup problem. Falls back to a direct fetch if the proxy fails,
+    errors, or itself gets blocked.
+    """
+    if USE_READER_PROXY:
+        proxied_url = READER_PROXY_PREFIX + url
+        try:
+            resp = requests.get(proxied_url, headers={"Accept": "text/plain"}, timeout=25)
+            print(f"  [{label}] reader-proxy GET {proxied_url} -> HTTP {resp.status_code}, {len(resp.text)} bytes", file=sys.stderr)
+            if resp.status_code == 200 and not _looks_like_challenge(resp.text):
+                return resp.text
+            print(f"  [{label}] reader proxy didn't return usable content - falling back to a direct fetch.", file=sys.stderr)
+        except requests.RequestException as e:
+            print(f"  [{label}] reader proxy fetch failed ({e}) - falling back to a direct fetch.", file=sys.stderr)
+
+    return _direct_fetch(url, label)
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +246,30 @@ PRICE_RE = re.compile(r"([\d][\d.,]*)\s*triệu\s*/\s*m2", re.IGNORECASE)
 PERCENT_RE = re.compile(r"([\d][\d.,]*)\s*%")
 
 
+def _flatten_to_lines(content):
+    """Turn either raw HTML (direct fetch) or Markdown (reader-proxy
+    fetch) into a flat list of normalized, non-empty lines. Markdown
+    renders links as "[text](url)" rather than plain text, so those are
+    unwrapped to just their text before normalizing - otherwise line-based
+    matching (e.g. against a district name) would never hit.
+    """
+    if "<html" in content.lower() or "<body" in content.lower() or "<table" in content.lower():
+        soup = BeautifulSoup(content, "html.parser")
+        text = soup.get_text("\n")
+    else:
+        text = content
+
+    lines = []
+    for line in text.split("\n"):
+        m = re.match(r"^\[(.+?)\]\(.*\)$", line.strip())
+        if m:
+            line = m.group(1)
+        line = norm(line)
+        if line:
+            lines.append(line)
+    return lines
+
+
 def parse_mogi(html):
     """Parse Mogi.vn's Hanoi section into [{area, price, change, direction}].
 
@@ -221,9 +284,7 @@ def parse_mogi(html):
     lines ahead for the % figure, which let one district's change bleed
     into the row above it.
     """
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text("\n")
-    lines = [norm(l) for l in text.split("\n") if norm(l)]
+    lines = _flatten_to_lines(html)
     areas_norm = {norm(a): a for a in HANOI_AREAS}
 
     rows = []
@@ -344,8 +405,8 @@ def parse_batdongsan_district(html):
     ranges on the page), then falls back to the shared-unit-at-the-end
     phrasing.
     """
-    soup = BeautifulSoup(html, "html.parser")
-    text = norm(soup.get_text(" "))
+    soup_text = " ".join(_flatten_to_lines(html))
+    text = norm(soup_text)
     m = BDS_RANGE_RE.search(text) or BDS_RANGE_SHARED_UNIT_RE.search(text)
     if not m:
         return None
