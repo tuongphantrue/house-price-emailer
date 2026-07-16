@@ -1,8 +1,8 @@
 # Hanoi House/Land Price Emailer (runs on GitHub Actions, no local computer needed)
 
-Emails you the average house/land price per m² for every district (quận)
-and rural district (huyện) of Hanoi, sourced from Mogi.vn's price page,
-automatically via GitHub's free scheduled-workflow runners.
+Emails you house/land prices for Hanoi by district (quận) and rural
+district (huyện), pulled from up to 10 independent sources, automatically
+via GitHub's free scheduled-workflow runners.
 
 ## Important: read this before relying on it
 
@@ -10,44 +10,57 @@ Gold prices have a clean daily aggregator site with one simple table per
 seller. **Hanoi housing prices don't have a real equivalent.** There's no
 public site that publishes a clean, structured, frequently-updated table
 split out by property type (house vs. apartment vs. land) the way
-giavang.org does for gold sellers.
+giavang.org does for gold sellers. On top of that, some real estate sites
+front their pages with Cloudflare-style protection that blocklists
+GitHub Actions' shared runner IPs outright (confirmed via testing: a flat
+`403 Forbidden` on every single request, regardless of headers - that's
+an IP-range block, not a markup problem, and no amount of header-tweaking
+fixes it).
 
-Because of that, this script pulls from **two independent sources** and
-treats them separately, so one site blocking scrapers or changing its
-markup doesn't take the whole email down - the same idea as the gold
-script's per-seller error handling, just applied across sources instead of
-sellers within one source:
+Given that, this script hedges hard: it tries **10 independent sources**,
+and treats every one of them as fully expendable - if a source errors,
+gets blocked, or its page structure doesn't match what the parser
+expects, it's silently left out of that run's email. No error
+placeholders, no partial-failure noise - just whatever sources actually
+came through, each in its own clearly labeled section, with a footer
+listing which ones made it in. If literally none come through, no email
+gets sent at all rather than sending an empty one.
 
 1. **Mogi.vn** ([gia-nha-dat](https://mogi.vn/gia-nha-dat)) - one blended
    average price/m² per district (house + land together), with a
    month-over-month % change. One page covers every Hanoi district.
-2. **Batdongsan.com.vn** - a min/max price/m² range for street-front
-   houses ("nhà mặt phố"), fetched one page per district, for the 12 main
-   urban districts (outlying huyện don't appear to have this page type).
+2-5. **Batdongsan.com.vn**, one source per property type - confirmed
+   working via the reader-proxy workaround (see below) - each a min/max
+   price/m² range, fetched one page per district (12 main urban
+   districts; outlying huyện don't appear to have these page types):
+   - Nhà mặt phố (street-front houses)
+   - Chung cư (apartments) - the one genuinely separate apartment table
+   - Nhà riêng (regular houses)
+   - Đất nền (land)
+6-10. **Nhatot.com, Alonhadat.com.vn, Cafeland.vn, Homedy.com, Dothi.net**
+   - best-effort generic scans, added for extra redundancy. These are
+     educated-guess URLs and a generic parser, not verified integrations -
+     don't be surprised if some of these consistently come back empty,
+     that's expected and harmless given the "just skip it" design. If you
+     want one fixed for real, check that source's `[label]` diagnostic
+     lines in the Action's log and share them back.
 
-Neither of these is an apartment-only table - a clean, scrapable,
-public source split out that way doesn't seem to exist (real per-district
-apartment breakdowns are loaded via JavaScript after the page loads, or
-buried as prose in SEO articles, neither of which a plain HTTP scraper can
-reliably read). If you find one, `parse_mogi` / `parse_batdongsan_district`
-in the script are where to wire in a third source.
+If you find a source and it's not wired in, `generic_district_scan()` in
+the script is the easiest way to add one - it just needs a URL.
 
-**If a run comes back with 0 rows for a source**, `fetch_page()` now prints
+**If a run comes back with 0 rows for a source**, `fetch_page()` prints
 diagnostics to the Action's log: the HTTP status code, response size, and
 whether the response looks like a JS/anti-bot challenge page (Cloudflare
-and similar) rather than real content. A flat `403 Forbidden` on every
-single request, immediately, regardless of headers, is the signature of
-an **IP-range block** - both sources currently do this to GitHub Actions'
-shared runner IPs. No amount of header-tweaking fixes that, since it's
-rejected before the page even renders.
+and similar) rather than real content.
 
-As a workaround, `fetch_page()` tries a public "reader" proxy
-(`r.jina.ai`) first - it fetches the page on its own infrastructure (a
-different IP/fingerprint than GitHub's runners) and returns the text,
-falling back to a direct fetch if that doesn't work either. This is set
-via `USE_READER_PROXY=true` (the default). It's a best-effort workaround,
-not a guarantee - the underlying sites could block the proxy's IPs too, or
-change behavior at any time. If both the proxy and the direct fetch keep
+As a workaround for IP-range blocks, `fetch_page()` tries a public
+"reader" proxy (`r.jina.ai`) first - it fetches the page on its own
+infrastructure (a different IP/fingerprint than GitHub's runners) and
+returns the text, falling back to a direct fetch if that doesn't work
+either. This is set via `USE_READER_PROXY=true` (the default). It's a
+best-effort workaround, not a guarantee - the underlying sites could block
+the proxy's IPs too, or change behavior at any time. If both the proxy
+and the direct fetch keep
 getting blocked, the realistic remaining options are: running this from a
 non-cloud/residential IP instead of GitHub Actions (e.g. your own
 computer via cron), or a paid scraping API service that maintains
