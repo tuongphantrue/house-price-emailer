@@ -90,6 +90,7 @@ import re
 import smtplib
 import ssl
 import sys
+import time
 import unicodedata
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -217,6 +218,12 @@ def _direct_fetch(url, label):
     return resp.text
 
 
+RATE_LIMIT_MAX_RETRIES = int(os.environ.get("READER_PROXY_MAX_RETRIES", "3"))
+RATE_LIMIT_BACKOFF_SECONDS = float(os.environ.get("READER_PROXY_BACKOFF_SECONDS", "4"))
+READER_PROXY_MIN_BYTES = int(os.environ.get("READER_PROXY_MIN_BYTES", "10000"))
+READER_PROXY_PACING_SECONDS = float(os.environ.get("READER_PROXY_PACING_SECONDS", "1.5"))
+
+
 def fetch_page(url, label=""):
     """GET a page's content, printing diagnostics (status code, response
     length, anti-bot-challenge detection) instead of a bare failure.
@@ -224,17 +231,60 @@ def fetch_page(url, label=""):
     GitHub's runners - relevant since a flat 403 regardless of headers is
     an IP-range block, not a markup problem), falling back to a direct
     fetch.
+
+    The reader proxy is a shared free service with its own request-rate
+    limit - running many requests back-to-back (e.g. one per district per
+    property type) can trip a 429 on it well before any target site is
+    even involved. A 429 here is retried with backoff rather than treated
+    as a dead end, since immediately falling back to a direct fetch just
+    trades one block for another (the site's own anti-bot page). A short
+    pacing delay between calls also helps avoid tripping the limit in the
+    first place.
+
+    A "successful" (200, non-challenge) response that's suspiciously
+    short is also not trusted at face value - real district/category
+    pages have run tens of KB; a response of only a few KB is more likely
+    a stub, redirect notice, or truncated render than the actual table,
+    so that case falls through to a direct fetch too rather than being
+    silently accepted as empty-but-valid.
     """
+    if READER_PROXY_PACING_SECONDS > 0:
+        time.sleep(READER_PROXY_PACING_SECONDS)
+
     if USE_READER_PROXY:
         proxied_url = READER_PROXY_PREFIX + url
-        try:
-            resp = requests.get(proxied_url, headers={"Accept": "text/plain"}, timeout=25)
+        attempt = 0
+        while attempt <= RATE_LIMIT_MAX_RETRIES:
+            attempt += 1
+            try:
+                resp = requests.get(proxied_url, headers={"Accept": "text/plain"}, timeout=25)
+            except requests.RequestException as e:
+                print(f"  [{label}] reader proxy fetch failed ({e}) - falling back to a direct fetch.", file=sys.stderr)
+                break
+
             print(f"  [{label}] reader-proxy GET {proxied_url} -> HTTP {resp.status_code}, {len(resp.text)} bytes", file=sys.stderr)
+
+            if resp.status_code == 429:
+                if attempt <= RATE_LIMIT_MAX_RETRIES:
+                    wait = RATE_LIMIT_BACKOFF_SECONDS * attempt
+                    print(f"  [{label}] reader proxy rate-limited (429) - retrying in {wait:.0f}s (attempt {attempt}/{RATE_LIMIT_MAX_RETRIES}).", file=sys.stderr)
+                    time.sleep(wait)
+                    continue
+                print(f"  [{label}] reader proxy still rate-limited after {RATE_LIMIT_MAX_RETRIES} retries - falling back to a direct fetch.", file=sys.stderr)
+                break
+
             if resp.status_code == 200 and not _looks_like_challenge(resp.text):
+                if len(resp.text) < READER_PROXY_MIN_BYTES:
+                    print(
+                        f"  [{label}] reader proxy returned only {len(resp.text)} bytes (< {READER_PROXY_MIN_BYTES}) - "
+                        f"too short to trust as the real page, snippet: {resp.text[:300]!r}",
+                        file=sys.stderr,
+                    )
+                    break
                 return resp.text
+
             print(f"  [{label}] reader proxy didn't return usable content - falling back to a direct fetch.", file=sys.stderr)
-        except requests.RequestException as e:
-            print(f"  [{label}] reader proxy fetch failed ({e}) - falling back to a direct fetch.", file=sys.stderr)
+            break
 
     return _direct_fetch(url, label)
 
@@ -310,6 +360,15 @@ def fetch_mogi():
                 direction = "up" if lines[i + 2] == "▲" else "down"
         seen.add(area)
         rows.append({"area": area, "price": price, "change": change, "direction": direction})
+
+    if not rows:
+        found_areas = [a for a in HANOI_AREAS if norm(a) in lines]
+        print(
+            f"  [Mogi.vn] fetched {len(html)} bytes, {len(lines)} lines, but found 0 matching "
+            f"district+price pairs. District names found in the text: {found_areas or '(none)'}. "
+            f"First 300 chars: {html[:300]!r}",
+            file=sys.stderr,
+        )
     return rows
 
 
