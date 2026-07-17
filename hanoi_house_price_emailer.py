@@ -335,29 +335,60 @@ MOGI_URL = os.environ.get("MOGI_URL", "https://mogi.vn/gia-nha-dat")
 
 
 def fetch_mogi():
+    """Parse Mogi.vn's Hanoi section into [{area, price, change, direction}].
+
+    Scans forward from each known district name for the first line with a
+    price, bounded by either a max lookahead or the next known district
+    name (whichever comes first) - not a fixed "next line" offset. Mogi's
+    page has changed its exact markup/spacing between the name and price
+    more than once during development of this script (sometimes 1 line
+    apart, sometimes more), so a fixed offset breaks intermittently; this
+    bounded scan tolerates that drift without reintroducing the earlier
+    bug where an unbounded lookahead let one row's % change bleed into
+    the row above it - bounding at the next district name (or a small
+    max) prevents that regardless of how many lines apart things end up
+    being.
+    """
     html = fetch_page(MOGI_URL, label="Mogi.vn")
     lines = _flatten_to_lines(html)
     areas_norm = {norm(a): a for a in HANOI_AREAS}
+    area_indices = [i for i, line in enumerate(lines) if line in areas_norm]
 
     rows = []
     seen = set()
-    for i, line in enumerate(lines):
-        area = areas_norm.get(line)
-        if not area or area in seen or i + 1 >= len(lines):
+    max_lookahead = 6
+    for idx, i in enumerate(area_indices):
+        area = areas_norm[lines[i]]
+        if area in seen:
             continue
-        w = lines[i + 1]
-        m = PRICE_RE.search(w)
-        if not m:
+        next_area_i = area_indices[idx + 1] if idx + 1 < len(area_indices) else len(lines)
+        window_end = min(i + 1 + max_lookahead, next_area_i, len(lines))
+
+        price = None
+        price_line_idx = None
+        for j in range(i + 1, window_end):
+            m = PRICE_RE.search(lines[j])
+            if m:
+                price = m.group(1)
+                price_line_idx = j
+                break
+        if price is None:
             continue
-        price = m.group(1)
+
         change = None
         direction = None
-        pm = PERCENT_RE.search(w)
-        if pm:
-            change = pm.group(1)
-            direction = "up" if "▲" in w else ("down" if "▼" in w else None)
-            if direction is None and i + 2 < len(lines) and lines[i + 2] in ("▲", "▼"):
-                direction = "up" if lines[i + 2] == "▲" else "down"
+        for j in range(price_line_idx, min(price_line_idx + 2, window_end)):
+            w = lines[j]
+            pm = PERCENT_RE.search(w)
+            if pm and change is None:
+                change = pm.group(1)
+            if "▲" in w:
+                direction = "up"
+            elif "▼" in w:
+                direction = "down"
+            if change is not None and direction is not None:
+                break
+
         seen.add(area)
         rows.append({"area": area, "price": price, "change": change, "direction": direction})
 
