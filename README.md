@@ -51,6 +51,22 @@ speculative entries that would just come back empty every run:
    worth adding - `fetch_nhatot()` or `fetch_batdongsan_category()` in
    the script are good examples of how a source is wired in.
 
+## Sample listings section
+
+The email also includes a "Nhà mẫu tham khảo" (sample listings) section
+with a handful of real, individual property listings - title, total
+price, area, and a link - pulled from the same Batdongsan.com.vn pages
+already being fetched for the price-range tables above. This costs no
+extra requests: those pages already contain individual listing cards
+alongside the aggregate price data, so a few are extracted as a
+by-product of the existing fetch. Only works when the reader-proxy path
+succeeds (the listing cards are parsed from its Markdown output; a
+direct-fetch fallback's raw HTML won't match), and a district whose price
+range page doesn't happen to show any matching listing cards just
+contributes nothing here - no impact on the price data either way. Up to
+`MAX_SAMPLE_LISTINGS` (default 8) are chosen at random each run for some
+variety. Purely illustrative, not a curated or complete listing feed.
+
 ## Typical total price section
 
 Below the per-district tables, the email adds a "Giá nhà điển hình tại
