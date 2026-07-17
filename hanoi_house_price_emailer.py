@@ -498,11 +498,57 @@ def extract_sample_listings(content, category_label, district_label, max_samples
     return out
 
 
+# meta-og:image appears two different ways depending on which fetch path
+# was used: as a YAML-frontmatter-style line in the reader-proxy's
+# Markdown output ("meta-og:image: https://...", seen when inspecting
+# these pages directly), or as a standard <meta property="og:image"
+# content="..."> tag in raw HTML from a direct fetch. Listing detail
+# pages set this per-listing (unlike the lazy-loaded card thumbnails on
+# the category/district listing pages, which don't expose a real src),
+# so this is the reliable way to get an actual photo for a listing.
+OG_IMAGE_MD_RE = re.compile(r'meta-og:image:\s*(\S+)', re.IGNORECASE)
+OG_IMAGE_HTML_RE = re.compile(
+    r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']'
+    r'|<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']',
+    re.IGNORECASE,
+)
+
+
+def fetch_listing_image(url, label):
+    """Best-effort fetch of a listing's og:image. Returns None on any
+    failure rather than raising - a missing photo just means that card
+    renders without one, which is fine for illustrative content.
+    """
+    try:
+        content = fetch_page(url, label=label)
+    except requests.RequestException as e:
+        print(f"  [{label}] image fetch failed: {e}", file=sys.stderr)
+        return None
+    m = OG_IMAGE_MD_RE.search(content)
+    if m:
+        return m.group(1)
+    m = OG_IMAGE_HTML_RE.search(content)
+    if m:
+        return m.group(1) or m.group(2)
+    return None
+
+
+def attach_listing_images(listings):
+    """Mutates each listing dict in place, adding an 'image' key (URL or
+    None). One extra fetch per listing - only called on the small final
+    subset actually going in the email, not every candidate found.
+    """
+    for l in listings:
+        l["image"] = fetch_listing_image(l["url"], label=f"Image/{l['district']}")
+    return listings
+
+
 def render_sample_listings_html(listings):
     if not listings:
         return ""
     cards = "\n".join(
         f"""<div style="border:1px solid #eee;border-radius:8px;padding:10px 14px;margin-bottom:8px;max-width:600px;">
+    {f'<img src="{escape(l["image"])}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:6px;margin-bottom:8px;display:block;" />' if l.get("image") else ""}
     <div style="font-size:13px;color:#1a5fb4;font-weight:bold;">{escape(l['category'])}</div>
     <div style="font-size:14px;margin:2px 0;"><a href="{escape(l['url'])}" style="color:#111;text-decoration:none;">{escape(l['title'])}</a></div>
     <div style="font-size:13px;color:#555;">{escape(l['price'])} · {escape(l['area'])} m² · {escape(l['ward'])}</div>
@@ -526,6 +572,8 @@ def render_sample_listings_text(listings):
     for l in listings:
         lines.append(f"[{l['category']}] {l['title']} - {l['price']} - {l['area']} m2 - {l['ward']}")
         lines.append(f"  {l['url']}")
+        if l.get("image"):
+            lines.append(f"  Anh: {l['image']}")
     return "\n".join(lines)
 
 
@@ -853,6 +901,10 @@ def cmd_generate():
         listings = random.sample(SAMPLE_LISTINGS, max_listings)
     else:
         listings = list(SAMPLE_LISTINGS)
+
+    if listings and os.environ.get("FETCH_LISTING_IMAGES", "true").lower() == "true":
+        attach_listing_images(listings)
+        print(f"Fetched images for {sum(1 for l in listings if l.get('image'))}/{len(listings)} sample listing(s).")
 
     combined = {r["name"]: r["rows"] for r in results}
     price_hash = hash_data(combined)
