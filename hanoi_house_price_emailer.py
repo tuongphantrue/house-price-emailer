@@ -86,6 +86,7 @@ SETUP
 import hashlib
 import json
 import os
+import random
 import re
 import smtplib
 import ssl
@@ -439,6 +440,95 @@ def render_change_text(rows):
 # the reader proxy.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Sample listings - real individual properties (not aggregate stats),
+# pulled from the same batdongsan.com.vn category/district pages already
+# being fetched above for price-range data. No extra requests: each
+# listing page's content already contains individual listing cards
+# alongside the price summary, so this just extracts a few of them as a
+# by-product of the existing fetch.
+#
+# Listing cards only parse out of the reader-proxy's Markdown rendering
+# (they appear as "[Ảnh đại diện ...](url "title")" links) - a raw HTML
+# direct-fetch fallback won't match this regex, so districts that fell
+# back to a direct fetch just won't contribute a sample, which is fine
+# given this is illustrative, not the main price data.
+# ---------------------------------------------------------------------------
+
+SAMPLE_LISTINGS = []  # reset per run in cmd_generate(); populated by fetch_batdongsan_category
+
+LISTING_LINK_RE = re.compile(r'\[(Ảnh đại diện[^\]]{0,400})\]\((https://batdongsan\.com\.vn/[^\s\)]+)(?:\s+"([^"]*)")?\)')
+# Price and area are anchored together via "·" in the card format
+# ("1.250 tỷ ·476,4 m²") - matching them as one pair rather than
+# separately avoids false-matching an unrelated price mentioned earlier
+# in the description (e.g. "HĐ thuê 36 tỷ/năm" - a rental-income figure -
+# appearing before the actual sale price in some listing titles).
+LISTING_PRICE_AREA_RE = re.compile(
+    r'([\d][\d.,]*\s*tỷ(?:/năm)?|[Gg]iá thỏa thuận|[Tt]hỏa thuận)\s*·\s*([\d][\d.,]*)\s*m²'
+)
+LISTING_WARD_RE = re.compile(r'P\.\s*([^(]+?)\s*\(')
+
+
+def extract_sample_listings(content, category_label, district_label, max_samples=2):
+    """Pull up to max_samples individual listing cards out of a
+    batdongsan.com.vn category/district page's Markdown content. Best
+    effort - a card missing a clear price+area pair is skipped rather
+    than guessed at, since this is illustrative content, not data to be
+    relied on.
+    """
+    out = []
+    for match in LISTING_LINK_RE.finditer(content):
+        if len(out) >= max_samples:
+            break
+        link_text, url, title_attr = match.groups()
+        pa_m = LISTING_PRICE_AREA_RE.search(link_text)
+        if not pa_m:
+            continue
+        ward_m = LISTING_WARD_RE.search(link_text)
+        title = (title_attr or "").strip() or link_text[:80].strip()
+        out.append({
+            "category": category_label,
+            "district": district_label,
+            "title": title,
+            "price": pa_m.group(1).strip(),
+            "area": pa_m.group(2).strip(),
+            "ward": ward_m.group(1).strip() if ward_m else district_label,
+            "url": url,
+        })
+    return out
+
+
+def render_sample_listings_html(listings):
+    if not listings:
+        return ""
+    cards = "\n".join(
+        f"""<div style="border:1px solid #eee;border-radius:8px;padding:10px 14px;margin-bottom:8px;max-width:600px;">
+    <div style="font-size:13px;color:#1a5fb4;font-weight:bold;">{escape(l['category'])}</div>
+    <div style="font-size:14px;margin:2px 0;"><a href="{escape(l['url'])}" style="color:#111;text-decoration:none;">{escape(l['title'])}</a></div>
+    <div style="font-size:13px;color:#555;">{escape(l['price'])} · {escape(l['area'])} m² · {escape(l['ward'])}</div>
+    </div>"""
+        for l in listings
+    )
+    return f"""
+  <h2 style="color:#333;font-size:16px;border-bottom:2px solid #1a5fb4;padding-bottom:4px;margin-top:24px;">
+    Nhà mẫu tham khảo (tin đăng thực tế)
+  </h2>
+  <p style="color:#666;font-size:13px;">
+    Một vài tin đăng thực tế lấy từ Batdongsan.com.vn, chỉ mang tính minh họa - không phải danh sách đầy đủ hay gợi ý mua.
+  </p>
+  {cards}"""
+
+
+def render_sample_listings_text(listings):
+    if not listings:
+        return ""
+    lines = ["== NHA MAU THAM KHAO (tin dang thuc te) =="]
+    for l in listings:
+        lines.append(f"[{l['category']}] {l['title']} - {l['price']} - {l['area']} m2 - {l['ward']}")
+        lines.append(f"  {l['url']}")
+    return "\n".join(lines)
+
+
 def fetch_batdongsan_category(url_prefix, label):
     rows = []
     for name, slug in DISTRICT_SLUGS:
@@ -448,6 +538,7 @@ def fetch_batdongsan_category(url_prefix, label):
         except requests.RequestException as e:
             print(f"  [{label}/{slug}] fetch failed: {e}", file=sys.stderr)
             continue
+        SAMPLE_LISTINGS.extend(extract_sample_listings(html, category_label=label, district_label=name))
         text = norm(" ".join(_flatten_to_lines(html)))
         m = BDS_RANGE_RE.search(text) or BDS_RANGE_SHARED_UNIT_RE.search(text)
         if not m:
@@ -696,7 +787,7 @@ def run_all_sources():
     return results
 
 
-def build_html(results, timestamp):
+def build_html(results, listings, timestamp):
     if not results:
         sections = "<p>No source returned data this run. Check the workflow logs.</p>"
     else:
@@ -709,6 +800,7 @@ def build_html(results, timestamp):
             for r in results
         )
     typical_section = render_typical_price_html(compute_typical_prices(results))
+    listings_section = render_sample_listings_html(listings)
     return f"""\
 <html>
 <body style="margin:0; padding:20px; background:#f4f4f4; font-family:Arial,Helvetica,sans-serif;">
@@ -716,6 +808,7 @@ def build_html(results, timestamp):
   <p style="color:#555;">Cập nhật {escape(timestamp)}</p>
   {sections}
   {typical_section}
+  {listings_section}
   <p style="color:#999; font-size:12px; margin-top:20px;">
     Nguồn đã lấy được dữ liệu lần này: {escape(", ".join(r["name"] for r in results)) if results else "(không có)"} ·
     Đơn vị: triệu đồng/m² · Email tự động, chỉ mang tính tham khảo, không phải
@@ -725,7 +818,7 @@ def build_html(results, timestamp):
 </html>"""
 
 
-def build_plain_text(results, timestamp):
+def build_plain_text(results, listings, timestamp):
     lines = [f"Gia nha dat Ha Noi theo quan/huyen - cap nhat {timestamp}", ""]
     if not results:
         lines.append("No source returned data this run. Check the workflow logs.")
@@ -737,6 +830,10 @@ def build_plain_text(results, timestamp):
         typical_text = render_typical_price_text(compute_typical_prices(results))
         if typical_text:
             lines.append(typical_text)
+            lines.append("")
+        listings_text = render_sample_listings_text(listings)
+        if listings_text:
+            lines.append(listings_text)
     return "\n".join(lines)
 
 
@@ -746,8 +843,16 @@ def cmd_generate():
             os.remove(os.path.join(EMAIL_DIR, f))
     os.makedirs(EMAIL_DIR, exist_ok=True)
 
+    SAMPLE_LISTINGS.clear()
     results = run_all_sources()
     print(f"\n{len(results)}/{len(SOURCES)} source(s) returned data this run.")
+    print(f"Collected {len(SAMPLE_LISTINGS)} sample listing(s) as a by-product of the fetches above.")
+
+    max_listings = int(os.environ.get("MAX_SAMPLE_LISTINGS", "8"))
+    if len(SAMPLE_LISTINGS) > max_listings:
+        listings = random.sample(SAMPLE_LISTINGS, max_listings)
+    else:
+        listings = list(SAMPLE_LISTINGS)
 
     combined = {r["name"]: r["rows"] for r in results}
     price_hash = hash_data(combined)
@@ -761,8 +866,8 @@ def cmd_generate():
 
     now, timestamp = resolve_timestamp()
     subject = f"Gia nha dat Ha Noi - {now.strftime('%d/%m/%Y %H:%M')}"
-    html_body = build_html(results, timestamp)
-    text_body = build_plain_text(results, timestamp)
+    html_body = build_html(results, listings, timestamp)
+    text_body = build_plain_text(results, listings, timestamp)
 
     with open(os.path.join(EMAIL_DIR, "subject.txt"), "w") as f:
         f.write(subject)
