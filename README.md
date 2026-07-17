@@ -107,6 +107,26 @@ empty after all that, `fetch_mogi()` in particular now logs a text
 snippet of whatever it did receive, so a repeat failure gives something
 concrete to debug rather than another guess.
 
+This already caught one real issue: Mogi.vn's page structure shifted
+slightly (the price now sits a variable number of lines after the
+district name instead of always exactly one line after), which broke the
+original fixed-offset parser. It's now a bounded scan - look ahead until
+either a price is found or the next known district name is hit - instead
+of assuming a fixed offset, so it should tolerate small future markup
+drift without breaking again.
+
+**Nhatot.com looks like a harder block than the others.** Its
+reader-proxy response came back as a tiny ~500-byte stub (likely the
+proxy's own "this page couldn't be fetched" response) and the direct
+fetch hit a real Cloudflare "just a moment" JS challenge - not a rate
+limit, an actual challenge requiring JavaScript execution to pass.
+Neither the reader proxy nor a plain HTTP client can solve that; getting
+past it would need a genuine headless-browser fetch, which is a
+meaningfully bigger piece of infrastructure than this script currently
+uses. It's left in the source list since it's harmless (skipped silently
+like anything else), but don't expect it to start working without that
+kind of change.
+
 If a source still comes back empty even after retries and pacing, the
 realistic remaining options are: running this from a non-cloud/residential
 IP instead of GitHub Actions (e.g. your own computer via cron), or a paid
