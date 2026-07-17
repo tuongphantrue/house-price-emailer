@@ -51,6 +51,32 @@ speculative entries that would just come back empty every run:
    worth adding - `fetch_nhatot()` or `fetch_batdongsan_category()` in
    the script are good examples of how a source is wired in.
 
+## Design
+
+The email uses a warm ochre header band (the color of Hanoi's
+French-colonial building facades throughout the Old Quarter) over a cream
+content panel, with a serif/sans type pairing (Georgia for headings and
+prices, Helvetica/Arial for labels and table data - both near-universal
+system fonts, since email clients can't reliably load custom web fonts).
+Each section has a small numbered "— Nguồn N" label instead of a plain
+heading, and there's a quick stat strip up top (sources available /
+fetched / district count) for an at-a-glance read before scrolling
+through the tables.
+
+Price-direction colors follow the **Vietnamese/Asian market convention**
+(tăng/increase = red, giảm/decrease = green) rather than the US
+convention (green = up) - the opposite of what an English-language
+template would default to, but the correct one for this content and
+audience.
+
+All styling is inline (required for reliable rendering across email
+clients, especially Gmail and Outlook) with a `<meta name="viewport">`
+tag and a fluid-width container so it scales down cleanly on mobile. The
+design tokens (colors, fonts) are defined once near the top of
+`hanoi_house_price_emailer.py` (`C_*` and `F_*` constants) and reused
+across every render function, so a palette or font change only needs to
+happen in one place.
+
 ## Sample listings section
 
 The email also includes a "Nhà mẫu tham khảo" (sample listings) section
