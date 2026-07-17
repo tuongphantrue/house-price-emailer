@@ -55,17 +55,29 @@ speculative entries that would just come back empty every run:
 
 The email also includes a "Nhà mẫu tham khảo" (sample listings) section
 with a handful of real, individual property listings - title, total
-price, area, and a link - pulled from the same Batdongsan.com.vn pages
-already being fetched for the price-range tables above. This costs no
-extra requests: those pages already contain individual listing cards
-alongside the aggregate price data, so a few are extracted as a
-by-product of the existing fetch. Only works when the reader-proxy path
-succeeds (the listing cards are parsed from its Markdown output; a
-direct-fetch fallback's raw HTML won't match), and a district whose price
-range page doesn't happen to show any matching listing cards just
-contributes nothing here - no impact on the price data either way. Up to
-`MAX_SAMPLE_LISTINGS` (default 8) are chosen at random each run for some
-variety. Purely illustrative, not a curated or complete listing feed.
+price, area, a photo, and a link - pulled from the same Batdongsan.com.vn
+pages already being fetched for the price-range tables above. Finding
+the *candidate* listings costs no extra requests (those pages already
+contain listing cards alongside the aggregate price data), but getting a
+real *photo* for each one does: the card thumbnails on category/district
+pages are lazy-loaded and don't expose a real image URL in the fetched
+content, so each selected listing's own detail page is fetched separately
+to read its `og:image` meta tag, which - unlike the lazy-loaded card
+thumbnail - is set server-side and reliably present. This only happens
+for the small final subset actually going in the email (`MAX_SAMPLE_LISTINGS`,
+default 8), not every candidate found, so it's a bounded number of extra
+requests. A listing without a resolvable image just renders without one
+rather than breaking the layout. Set `FETCH_LISTING_IMAGES=false` to skip
+this and keep listings text-only (faster, fewer requests).
+
+Only works when the reader-proxy path succeeds for the category/district
+fetch (the listing cards are parsed from its Markdown output; a
+direct-fetch fallback's raw HTML won't match the card-parsing regex,
+though it *will* still work for the og:image fetch, which handles both
+formats), and a district whose price-range page doesn't happen to show
+any matching listing cards just contributes nothing here - no impact on
+the price data either way. Purely illustrative, not a curated or complete
+listing feed.
 
 ## Typical total price section
 
