@@ -133,6 +133,51 @@ CHALLENGE_MARKERS = [
     "captcha",
 ]
 
+# ---------------------------------------------------------------------------
+# Email design tokens. Palette is drawn from Hanoi's own visual vocabulary
+# rather than a generic dashboard look: the ochre/mustard is the color of
+# the French-colonial building facades throughout the Old Quarter and
+# government buildings; the lacquer red-orange echoes traditional sơn mài
+# lacquerware and the Thê Húc bridge. Price-direction colors follow the
+# Vietnamese/Asian market convention (tăng/up = red, giảm/down = green) -
+# the opposite of the US convention, but the correct one for this
+# audience and content. Serif (Georgia) for headings/prices gives a
+# "ledger" quality fitting a price digest; sans (Helvetica/Arial) for
+# labels and table data keeps numbers easy to scan. Both are near-universal
+# system fonts, since email clients can't reliably load custom web fonts.
+# ---------------------------------------------------------------------------
+
+C_BG = "#EDE6D6"           # outer page background
+C_PANEL = "#F7F2E7"        # main content panel (warm cream)
+C_HEADER = "#B8823A"       # ochre header band
+C_HEADER_TEXT = "#FFFBF3"
+C_HEADER_MUTED = "#F1DDB4"
+C_INK = "#2B2420"          # body text (warm near-black)
+C_MUTED = "#8A7A63"        # secondary text
+C_MUTED_LIGHT = "#9C9080"  # footer text
+C_RULE = "#E4D9C4"         # borders/dividers
+C_RULE_LIGHT = "#F1EBDC"   # row dividers within tables
+C_ZEBRA = "#FBF8F1"        # alternate row background
+C_CARD = "#FFFFFF"
+C_UP = "#B8471F"           # tăng/increase (Vietnamese convention: red)
+C_UP_BG = "#FBE7DD"
+C_DOWN = "#4B7A63"         # giảm/decrease (Vietnamese convention: green)
+C_DOWN_BG = "#E3ECE6"
+C_TAG_BG = "#F1E3C9"
+C_TAG_TEXT = "#8A5A1E"
+C_EYEBROW = "#9C6A22"
+
+F_DISPLAY = "Georgia, 'Times New Roman', serif"
+F_BODY = "Helvetica, Arial, sans-serif"
+
+
+def section_eyebrow_html(kicker, title, subtitle=None):
+    subtitle_html = f'<div style="font-family:{F_BODY};font-size:12px;color:{C_MUTED};margin-top:4px;">{escape(subtitle)}</div>' if subtitle else ""
+    return f"""
+  <div style="font-family:{F_BODY};font-size:11px;letter-spacing:1.5px;color:{C_EYEBROW};text-transform:uppercase;font-weight:bold;">— {escape(kicker)}</div>
+  <div style="font-family:{F_DISPLAY};font-size:18px;color:{C_INK};margin-top:2px;">{title}</div>
+  {subtitle_html}"""
+
 
 def norm(s):
     """Collapse NBSP/whitespace and normalize to NFC so Vietnamese
@@ -407,20 +452,26 @@ def fetch_mogi():
 def render_change_table(rows):
     def change_html(change, direction):
         if not change:
-            return "<span style='color:#999'>—</span>"
-        color = "#1a7f37" if direction == "up" else ("#cf222e" if direction == "down" else "#666")
+            return f"<span style='color:{C_MUTED};font-size:13px;'>—</span>"
+        color = C_UP if direction == "up" else (C_DOWN if direction == "down" else C_MUTED)
+        bg = C_UP_BG if direction == "up" else (C_DOWN_BG if direction == "down" else C_RULE_LIGHT)
         arrow = "▲" if direction == "up" else ("▼" if direction == "down" else "")
-        return f"<span style='color:{color}'>{escape(change)}% {arrow}</span>"
+        return f"<span style='display:inline-block;background:{bg};color:{color};font-size:12px;font-weight:bold;padding:2px 9px;border-radius:10px;'>{arrow} {escape(change)}%</span>"
 
     row_html = "\n".join(
-        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(r['area'])}</strong></td>"
-        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{escape(r['price'])} triệu/m²</td>"
-        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{change_html(r['change'], r['direction'])}</td></tr>"
-        for r in rows
+        f"<tr style='{'background:' + C_ZEBRA + ';' if i % 2 else ''}'>"
+        f"<td style='padding:10px 16px;font-family:{F_BODY};font-size:14px;color:{C_INK};border-bottom:1px solid {C_RULE_LIGHT};'>{escape(r['area'])}</td>"
+        f"<td style='padding:10px 16px;font-family:{F_BODY};font-size:14px;color:{C_INK};text-align:right;border-bottom:1px solid {C_RULE_LIGHT};'>{escape(r['price'])} triệu/m²</td>"
+        f"<td style='padding:10px 16px;text-align:right;border-bottom:1px solid {C_RULE_LIGHT};'>{change_html(r['change'], r['direction'])}</td></tr>"
+        for i, r in enumerate(rows)
     )
     return f"""
-    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:600px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-    <thead><tr style="background:#f5f5f5;"><th style="padding:8px 12px;text-align:left;">Quận / Huyện</th><th style="padding:8px 12px;text-align:right;">Giá trung bình</th><th style="padding:8px 12px;text-align:right;">So với tháng trước</th></tr></thead>
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;width:100%;max-width:600px;background:{C_CARD};border:1px solid {C_RULE};border-radius:8px;overflow:hidden;">
+    <thead><tr>
+      <th style="padding:10px 16px;text-align:left;font-family:{F_BODY};font-size:11px;color:{C_MUTED};text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid {C_RULE};">Quận / Huyện</th>
+      <th style="padding:10px 16px;text-align:right;font-family:{F_BODY};font-size:11px;color:{C_MUTED};text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid {C_RULE};">Giá trung bình</th>
+      <th style="padding:10px 16px;text-align:right;font-family:{F_BODY};font-size:11px;color:{C_MUTED};text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid {C_RULE};">So với tháng trước</th>
+    </tr></thead>
     <tbody>{row_html}</tbody>
     </table>"""
 
@@ -547,22 +598,26 @@ def render_sample_listings_html(listings):
     if not listings:
         return ""
     cards = "\n".join(
-        f"""<div style="border:1px solid #eee;border-radius:8px;padding:10px 14px;margin-bottom:8px;max-width:600px;">
-    {f'<img src="{escape(l["image"])}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:6px;margin-bottom:8px;display:block;" />' if l.get("image") else ""}
-    <div style="font-size:13px;color:#1a5fb4;font-weight:bold;">{escape(l['category'])}</div>
-    <div style="font-size:14px;margin:2px 0;"><a href="{escape(l['url'])}" style="color:#111;text-decoration:none;">{escape(l['title'])}</a></div>
-    <div style="font-size:13px;color:#555;">{escape(l['price'])} · {escape(l['area'])} m² · {escape(l['ward'])}</div>
-    </div>"""
+        f"""<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{C_CARD};border:1px solid {C_RULE};border-radius:8px;overflow:hidden;margin-bottom:12px;">
+    {f'<tr><td><img src="{escape(l["image"])}" width="100%" alt="" style="display:block;height:180px;object-fit:cover;" /></td></tr>' if l.get("image") else ""}
+    <tr><td style="padding:14px 16px;">
+      <span style="display:inline-block;background:{C_TAG_BG};color:{C_TAG_TEXT};font-size:10px;font-weight:bold;text-transform:uppercase;letter-spacing:0.5px;padding:3px 9px;border-radius:10px;">{escape(l['category'])}</span>
+      <div style="font-family:{F_DISPLAY};font-size:15px;color:{C_INK};margin-top:9px;line-height:1.35;"><a href="{escape(l['url'])}" style="color:{C_INK};text-decoration:none;">{escape(l['title'])}</a></div>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px;"><tr>
+        <td style="font-family:{F_DISPLAY};font-size:16px;color:{C_INK};font-weight:bold;">{escape(l['price'])}</td>
+        <td style="font-family:{F_BODY};font-size:12px;color:{C_MUTED};text-align:right;">{escape(l['area'])} m² · {escape(l['ward'])}</td>
+      </tr></table>
+    </td></tr>
+    </table>"""
         for l in listings
     )
+    eyebrow = section_eyebrow_html(
+        "Tin đăng thực tế", "Nhà mẫu tham khảo",
+        "Một vài tin đăng thực tế lấy từ Batdongsan.com.vn, chỉ mang tính minh họa - không phải danh sách đầy đủ hay gợi ý mua.",
+    )
     return f"""
-  <h2 style="color:#333;font-size:16px;border-bottom:2px solid #1a5fb4;padding-bottom:4px;margin-top:24px;">
-    Nhà mẫu tham khảo (tin đăng thực tế)
-  </h2>
-  <p style="color:#666;font-size:13px;">
-    Một vài tin đăng thực tế lấy từ Batdongsan.com.vn, chỉ mang tính minh họa - không phải danh sách đầy đủ hay gợi ý mua.
-  </p>
-  {cards}"""
+  {eyebrow}
+  <div style="margin-top:12px;">{cards}</div>"""
 
 
 def render_sample_listings_text(listings):
@@ -598,13 +653,17 @@ def fetch_batdongsan_category(url_prefix, label):
 
 def render_range_table(rows):
     row_html = "\n".join(
-        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(r['area'])}</strong></td>"
-        f"<td colspan='2' style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{escape(r['low'])} - {escape(r['high'])} triệu/m²</td></tr>"
-        for r in rows
+        f"<tr style='{'background:' + C_ZEBRA + ';' if i % 2 else ''}'>"
+        f"<td style='padding:10px 16px;font-family:{F_BODY};font-size:14px;color:{C_INK};border-bottom:1px solid {C_RULE_LIGHT};'>{escape(r['area'])}</td>"
+        f"<td colspan='2' style='padding:10px 16px;font-family:{F_BODY};font-size:14px;color:{C_INK};text-align:right;border-bottom:1px solid {C_RULE_LIGHT};'>{escape(r['low'])} - {escape(r['high'])} triệu/m²</td></tr>"
+        for i, r in enumerate(rows)
     )
     return f"""
-    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:600px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-    <thead><tr style="background:#f5f5f5;"><th style="padding:8px 12px;text-align:left;">Quận</th><th colspan="2" style="padding:8px 12px;text-align:right;">Khoảng giá</th></tr></thead>
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;width:100%;max-width:600px;background:{C_CARD};border:1px solid {C_RULE};border-radius:8px;overflow:hidden;">
+    <thead><tr>
+      <th style="padding:10px 16px;text-align:left;font-family:{F_BODY};font-size:11px;color:{C_MUTED};text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid {C_RULE};">Quận</th>
+      <th colspan="2" style="padding:10px 16px;text-align:right;font-family:{F_BODY};font-size:11px;color:{C_MUTED};text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid {C_RULE};">Khoảng giá</th>
+    </tr></thead>
     <tbody>{row_html}</tbody>
     </table>"""
 
@@ -768,22 +827,31 @@ def compute_typical_prices(results):
 def render_typical_price_html(typical):
     if not typical:
         return ""
-    header_cells = "".join(f"<th style='padding:8px 12px;text-align:right;'>{size} m²</th>" for size in TYPICAL_SIZES_M2)
+    header_cells = "".join(
+        f"<th style='padding:10px 16px;text-align:right;font-family:{F_BODY};font-size:11px;color:{C_MUTED};text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid {C_RULE};'>{size} m²</th>"
+        for size in TYPICAL_SIZES_M2
+    )
     body_rows = "\n".join(
-        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(t['label'])}</strong></td>"
-        + "".join(f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{escape(t['sizes'][size])}</td>" for size in TYPICAL_SIZES_M2)
+        f"<tr style='{'background:' + C_ZEBRA + ';' if i % 2 else ''}'>"
+        f"<td style='padding:10px 16px;font-family:{F_BODY};font-size:14px;color:{C_INK};border-bottom:1px solid {C_RULE_LIGHT};'>{escape(t['label'])}</td>"
+        + "".join(
+            f"<td style='padding:10px 16px;font-family:{F_BODY};font-size:13px;color:{C_INK};text-align:right;border-bottom:1px solid {C_RULE_LIGHT};'>{escape(t['sizes'][size])}</td>"
+            for size in TYPICAL_SIZES_M2
+        )
         + "</tr>"
-        for t in typical
+        for i, t in enumerate(typical)
+    )
+    eyebrow = section_eyebrow_html(
+        "Ước tính", "Giá nhà điển hình tại Hà Nội",
+        "Tính từ giá trung bình/m² ở trên nhân với diện tích tham khảo - chỉ mang tính minh họa, không phải giá thực tế của một căn nhà cụ thể.",
     )
     return f"""
-  <h2 style="color:#333;font-size:16px;border-bottom:2px solid #1a5fb4;padding-bottom:4px;margin-top:24px;">
-    Giá nhà điển hình tại Hà Nội (ước tính)
-  </h2>
-  <p style="color:#666;font-size:13px;">
-    Tính từ giá trung bình/m² ở trên nhân với diện tích tham khảo - chỉ mang tính minh họa, không phải giá thực tế của một căn nhà cụ thể.
-  </p>
-  <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:600px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-  <thead><tr style="background:#f5f5f5;"><th style="padding:8px 12px;text-align:left;">Loại hình</th>{header_cells}</tr></thead>
+  {eyebrow}
+  <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:12px;border-collapse:separate;width:100%;max-width:600px;background:{C_CARD};border:1px solid {C_RULE};border-radius:8px;overflow:hidden;">
+  <thead><tr>
+    <th style="padding:10px 16px;text-align:left;font-family:{F_BODY};font-size:11px;color:{C_MUTED};text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid {C_RULE};">Loại hình</th>
+    {header_cells}
+  </tr></thead>
   <tbody>{body_rows}</tbody>
   </table>"""
 
@@ -837,31 +905,78 @@ def run_all_sources():
 
 def build_html(results, listings, timestamp):
     if not results:
-        sections = "<p>No source returned data this run. Check the workflow logs.</p>"
+        sections = f"<p style='font-family:{F_BODY};color:{C_MUTED};padding:0 36px;'>Không có nguồn nào lấy được dữ liệu lần này. Kiểm tra log của workflow.</p>"
     else:
         sections = "\n".join(
             f"""
-  <h2 style="color:#333;font-size:16px;border-bottom:2px solid #1a5fb4;padding-bottom:4px;margin-top:24px;">
-    {escape(r['name'])}
-  </h2>
-  {r['render_html'](r['rows'])}"""
-            for r in results
+<tr><td style="padding:28px 36px 0;">
+  {section_eyebrow_html(f"Nguồn {i}", escape(r['name']))}
+</td></tr>
+<tr><td style="padding:12px 36px 0;">
+  {r['render_html'](r['rows'])}
+</td></tr>"""
+            for i, r in enumerate(results, start=1)
         )
+
     typical_section = render_typical_price_html(compute_typical_prices(results))
+    typical_block = f'<tr><td style="padding:30px 36px 0;">{typical_section}</td></tr>' if typical_section else ""
+
     listings_section = render_sample_listings_html(listings)
+    listings_block = f'<tr><td style="padding:30px 36px 0;">{listings_section}</td></tr>' if listings_section else ""
+
+    district_count = len({row["area"] for r in results for row in r["rows"] if "area" in row})
+    stat_strip = f"""
+<tr><td style="padding:18px 36px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td width="33%" style="padding:14px 0;text-align:center;border-right:1px solid {C_RULE};">
+      <div style="font-family:{F_DISPLAY};font-size:22px;color:{C_INK};">{len(SOURCES)}</div>
+      <div style="font-family:{F_BODY};font-size:10px;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;">Nguồn dữ liệu</div>
+    </td>
+    <td width="33%" style="padding:14px 0;text-align:center;border-right:1px solid {C_RULE};">
+      <div style="font-family:{F_DISPLAY};font-size:22px;color:{C_INK};">{len(results)}/{len(SOURCES)}</div>
+      <div style="font-family:{F_BODY};font-size:10px;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;">Đã lấy được</div>
+    </td>
+    <td width="34%" style="padding:14px 0;text-align:center;">
+      <div style="font-family:{F_DISPLAY};font-size:22px;color:{C_INK};">{district_count}</div>
+      <div style="font-family:{F_BODY};font-size:10px;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;">Quận/huyện</div>
+    </td>
+  </tr></table>
+</td></tr>"""
+
     return f"""\
 <html>
-<body style="margin:0; padding:20px; background:#f4f4f4; font-family:Arial,Helvetica,sans-serif;">
-  <h1 style="color:#1a5fb4;">Giá nhà đất Hà Nội theo quận/huyện</h1>
-  <p style="color:#555;">Cập nhật {escape(timestamp)}</p>
-  {sections}
-  {typical_section}
-  {listings_section}
-  <p style="color:#999; font-size:12px; margin-top:20px;">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+</head>
+<body style="margin:0;padding:0;background:{C_BG};font-family:{F_BODY};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{C_BG};">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:640px;max-width:100%;background:{C_PANEL};border-radius:10px;overflow:hidden;">
+
+<tr><td style="background:{C_HEADER};padding:32px 36px 26px;">
+  <div style="font-family:{F_BODY};font-size:11px;letter-spacing:2px;color:{C_HEADER_MUTED};text-transform:uppercase;font-weight:bold;">Bản tin giá bất động sản</div>
+  <div style="font-family:{F_DISPLAY};font-size:30px;color:{C_HEADER_TEXT};margin-top:6px;">Nhà đất Hà Nội</div>
+  <div style="height:2px;background:{C_HEADER_MUTED};opacity:0.5;margin:14px 0 10px;width:64px;"></div>
+  <div style="font-family:{F_BODY};font-size:12px;color:{C_HEADER_MUTED};">Cập nhật {escape(timestamp)}</div>
+</td></tr>
+{stat_strip}
+{sections}
+{typical_block}
+{listings_block}
+
+<tr><td style="padding:30px 36px 32px;">
+  <div style="height:1px;background:{C_RULE};margin-bottom:16px;"></div>
+  <div style="font-family:{F_BODY};font-size:11px;color:{C_MUTED_LIGHT};line-height:1.6;">
     Nguồn đã lấy được dữ liệu lần này: {escape(", ".join(r["name"] for r in results)) if results else "(không có)"} ·
     Đơn vị: triệu đồng/m² · Email tự động, chỉ mang tính tham khảo, không phải
     lời khuyên đầu tư.
-  </p>
+  </div>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
 </body>
 </html>"""
 
