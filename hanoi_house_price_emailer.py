@@ -508,7 +508,10 @@ def render_change_text(rows):
 
 SAMPLE_LISTINGS = []  # reset per run in cmd_generate(); populated by fetch_batdongsan_category
 
-LISTING_LINK_RE = re.compile(r'\[(Ảnh đại diện[^\]]*?)\]\((https://batdongsan\.com\.vn/[^\s\)]+)(?:\s+"([^"]*)")?\)')
+LISTING_LINK_RE = re.compile(
+    r'\[(Ảnh đại diện.*?)\]\((https://batdongsan\.com\.vn/[^\s\)]+)(?:\s+"([^"]*)")?\)',
+    re.DOTALL,
+)
 # Price and area are anchored together via "·" in the card format
 # ("1.250 tỷ ·476,4 m²") - matching them as one pair rather than
 # separately avoids false-matching an unrelated price mentioned earlier
@@ -634,6 +637,7 @@ def render_sample_listings_text(listings):
 
 def fetch_batdongsan_category(url_prefix, label):
     rows = []
+    diagnosed = False
     for name, slug in DISTRICT_SLUGS:
         url = f"https://batdongsan.com.vn/{url_prefix}-{slug}"
         try:
@@ -641,7 +645,19 @@ def fetch_batdongsan_category(url_prefix, label):
         except requests.RequestException as e:
             print(f"  [{label}/{slug}] fetch failed: {e}", file=sys.stderr)
             continue
+        before = len(SAMPLE_LISTINGS)
         SAMPLE_LISTINGS.extend(extract_sample_listings(html, category_label=label, district_label=name))
+        if len(SAMPLE_LISTINGS) == before and not diagnosed:
+            # 0 listings found on this page - show what's actually there
+            # instead of guessing at the format again. Only once per
+            # category run (not per district) to keep the log readable.
+            diagnosed = True
+            marker_count = html.count("Ảnh đại diện")
+            if marker_count == 0:
+                print(f"  [{label}/{slug}] listings diagnostic: 'Ảnh đại diện' does not appear anywhere in the {len(html)}-byte response - the card format has likely changed. First 500 chars: {html[:500]!r}", file=sys.stderr)
+            else:
+                idx = html.find("Ảnh đại diện")
+                print(f"  [{label}/{slug}] listings diagnostic: 'Ảnh đại diện' appears {marker_count}x but the card regex still didn't match. Snippet around first occurrence: {html[max(0,idx-50):idx+500]!r}", file=sys.stderr)
         text = norm(" ".join(_flatten_to_lines(html)))
         m = BDS_RANGE_RE.search(text) or BDS_RANGE_SHARED_UNIT_RE.search(text)
         if not m:
