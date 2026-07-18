@@ -51,6 +51,21 @@ speculative entries that would just come back empty every run:
    worth adding - `fetch_nhatot()` or `fetch_batdongsan_category()` in
    the script are good examples of how a source is wired in.
 
+## Vietnamese text encoding
+
+If Vietnamese diacritics ever show up mangled (e.g. "đất" rendering as
+"đâ´t", extra stray ´ or \` marks appearing near vowels), that's a
+character-encoding issue, not a data issue. `open()` without an explicit
+encoding falls back to the OS locale's default, and some CI runner images
+default to a non-UTF-8 locale - Python then writes/reads the file using
+the wrong encoding, which can corrupt non-ASCII text on the round trip
+even though the string was correct in memory right up until it hit disk.
+Every file read/write in this script now explicitly specifies
+`encoding="utf-8"`, `MIMEText` explicitly declares `utf-8` as its charset
+instead of relying on auto-detection, and the workflow sets
+`PYTHONUTF8=1` plus `LANG`/`LC_ALL=en_US.UTF-8` at the job level as a
+belt-and-suspenders fix at the interpreter/OS level too.
+
 ## Design
 
 The email uses a warm ochre header band (the color of Hanoi's
