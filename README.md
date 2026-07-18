@@ -120,6 +120,15 @@ any matching listing cards just contributes nothing here - no impact on
 the price data either way. Purely illustrative, not a curated or complete
 listing feed.
 
+Note: real listing descriptions on Batdongsan.com.vn are often quite
+long (500+ characters of marketing copy is normal for a "featured"
+listing) - an earlier version of the card-matching regex had a 400-
+character cap that silently failed to match anything past that length,
+which meant it was finding 0 listings on every single page despite the
+price-range extraction on those same pages working fine. Fixed by
+matching card content up to the next closing bracket with no length cap
+instead.
+
 ## Typical total price section
 
 Below the per-district tables, the email adds a "Giá nhà điển hình tại
