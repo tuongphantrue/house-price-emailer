@@ -218,7 +218,7 @@ def load_last_hash(path=STATE_FILE):
     if not os.path.exists(path):
         return None
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f).get("hash")
     except (json.JSONDecodeError, OSError) as e:
         print(f"  could not read {path} ({e}) - starting with empty dedup state", file=sys.stderr)
@@ -227,7 +227,7 @@ def load_last_hash(path=STATE_FILE):
 
 def save_last_hash(price_hash, path=STATE_FILE):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump({"hash": price_hash, "updated": datetime.utcnow().isoformat() + "Z"}, f)
 
 
@@ -1027,7 +1027,7 @@ def cmd_generate():
 
     if results and SEND_ONLY_ON_CHANGE and price_hash == last_hash:
         print("Prices unchanged since last run and SEND_ONLY_ON_CHANGE=true - skipping email.")
-        with open(os.path.join(EMAIL_DIR, "meta.json"), "w") as f:
+        with open(os.path.join(EMAIL_DIR, "meta.json"), "w", encoding="utf-8") as f:
             json.dump({"send": False}, f)
         return
 
@@ -1036,13 +1036,13 @@ def cmd_generate():
     html_body = build_html(results, listings, timestamp)
     text_body = build_plain_text(results, listings, timestamp)
 
-    with open(os.path.join(EMAIL_DIR, "subject.txt"), "w") as f:
+    with open(os.path.join(EMAIL_DIR, "subject.txt"), "w", encoding="utf-8") as f:
         f.write(subject)
-    with open(os.path.join(EMAIL_DIR, "body.html"), "w") as f:
+    with open(os.path.join(EMAIL_DIR, "body.html"), "w", encoding="utf-8") as f:
         f.write(html_body)
-    with open(os.path.join(EMAIL_DIR, "body.txt"), "w") as f:
+    with open(os.path.join(EMAIL_DIR, "body.txt"), "w", encoding="utf-8") as f:
         f.write(text_body)
-    with open(os.path.join(EMAIL_DIR, "meta.json"), "w") as f:
+    with open(os.path.join(EMAIL_DIR, "meta.json"), "w", encoding="utf-8") as f:
         json.dump({"send": bool(results), "sources": [r["name"] for r in results]}, f)
 
     if results:
@@ -1068,25 +1068,25 @@ def cmd_send():
     if not os.path.exists(meta_path):
         print("No meta.json found - run 'generate' first.", file=sys.stderr)
         sys.exit(1)
-    with open(meta_path) as f:
+    with open(meta_path, encoding="utf-8") as f:
         meta = json.load(f)
     if not meta.get("send", False):
         print("Nothing to send this run (no source returned data, or prices unchanged).")
         return
 
-    with open(os.path.join(EMAIL_DIR, "subject.txt")) as f:
+    with open(os.path.join(EMAIL_DIR, "subject.txt"), encoding="utf-8") as f:
         subject = f.read()
-    with open(os.path.join(EMAIL_DIR, "body.html")) as f:
+    with open(os.path.join(EMAIL_DIR, "body.html"), encoding="utf-8") as f:
         html_body = f.read()
-    with open(os.path.join(EMAIL_DIR, "body.txt")) as f:
+    with open(os.path.join(EMAIL_DIR, "body.txt"), encoding="utf-8") as f:
         text_body = f.read()
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = recipient
-    msg.attach(MIMEText(text_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     context = ssl.create_default_context()
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
