@@ -126,8 +126,16 @@ listing) - an earlier version of the card-matching regex had a 400-
 character cap that silently failed to match anything past that length,
 which meant it was finding 0 listings on every single page despite the
 price-range extraction on those same pages working fine. Fixed by
-matching card content up to the next closing bracket with no length cap
-instead.
+matching card content up to the closing bracket with no length cap, and
+hardened against listing descriptions that contain a stray "]"
+character themselves (common in bracket-decorated ad copy like
+"[Chính chủ]"), which the original character-class-based pattern would
+have mistaken for the closing bracket. If this still comes back with 0
+listings, `fetch_batdongsan_category` now logs a real diagnostic - either
+confirming "Ảnh đại diện" doesn't appear in the response at all (format
+changed further), or showing the actual text around it if it's present
+but still not matching, so a next fix is based on real evidence rather
+than another guess.
 
 ## Typical total price section
 
