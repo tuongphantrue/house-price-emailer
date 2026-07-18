@@ -11,6 +11,10 @@ permissions:
 jobs:
   send:
     runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: "1"
+      LANG: "en_US.UTF-8"
+      LC_ALL: "en_US.UTF-8"
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
