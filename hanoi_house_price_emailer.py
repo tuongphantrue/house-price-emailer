@@ -508,7 +508,7 @@ def render_change_text(rows):
 
 SAMPLE_LISTINGS = []  # reset per run in cmd_generate(); populated by fetch_batdongsan_category
 
-LISTING_LINK_RE = re.compile(r'\[(Ảnh đại diện[^\]]{0,400})\]\((https://batdongsan\.com\.vn/[^\s\)]+)(?:\s+"([^"]*)")?\)')
+LISTING_LINK_RE = re.compile(r'\[(Ảnh đại diện[^\]]*?)\]\((https://batdongsan\.com\.vn/[^\s\)]+)(?:\s+"([^"]*)")?\)')
 # Price and area are anchored together via "·" in the card format
 # ("1.250 tỷ ·476,4 m²") - matching them as one pair rather than
 # separately avoids false-matching an unrelated price mentioned earlier
