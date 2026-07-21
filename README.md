@@ -126,17 +126,31 @@ through a different fetch path than what the actual GitHub Actions
 workflow uses) - it never does. A production diagnostic dump confirmed
 the real structure: each photo is a proper Markdown image tag
 (`![Image N: Ảnh đại diện](https://file4.batdongsan.com.vn/...)`) nested
-*inside* the listing's outer link, which is why it was finding 0 listings
-on every single page despite being fetched correctly - the pattern was
-looking for something that structurally never existed. Fixed by matching
-on the real structure, distinguishing the listing's own closing link
+*inside* the listing's outer link. Fixed by matching on the real
+structure, distinguishing the listing's own closing link
 (`](https://batdongsan.com.vn/...)`) from the embedded images' closings
 (`](https://file4.batdongsan.com.vn/...)`) by host. This also means the
 real photo URL now comes for free out of the same content already being
 fetched for price data - the separate per-listing `og:image` fetch
 (`fetch_listing_image`) is now only a fallback for the rare listing that
-doesn't have an image, not the default path, so this feature costs
-close to zero extra requests now instead of one per listing.
+doesn't have an image, not the default path.
+
+That fix still wasn't enough on its own, though - listings were *still*
+coming back at 0, and the diagnostic was reporting "'Ảnh đại diện' does
+not appear anywhere" even in responses whose own printed snippet clearly
+showed that exact text. That contradiction was the real clue: it's a
+Unicode normalization mismatch. r.jina.ai appears to emit Vietnamese text
+in NFD (decomposed) form, which displays - and even prints to a log -
+identically to the NFC (precomposed) form used everywhere in this
+script's source, but fails every substring/regex match between the two,
+since they're different bytes underneath. Price-range extraction was
+never affected because that path already ran fetched lines through
+`unicodedata.normalize("NFC", ...)` as part of flattening them for
+matching; listing-card extraction operated on the raw fetched text
+directly and had no such step. Fixed at the actual source: `fetch_page()`
+now normalizes to NFC before returning, on both the reader-proxy and
+direct-fetch paths, so every consumer gets consistent text regardless of
+what form the source site actually sent.
 
 ## Typical total price section
 
