@@ -261,7 +261,9 @@ def _direct_fetch(url, label):
     if hit:
         print(f"  [{label}] Response contains '{hit}' - looks like a JS/anti-bot challenge page.", file=sys.stderr)
     resp.raise_for_status()
-    return resp.text
+    # Normalize to NFC here, at the single point all fetched content
+    # passes through - see the note on fetch_page() for why this matters.
+    return unicodedata.normalize("NFC", resp.text)
 
 
 RATE_LIMIT_MAX_RETRIES = int(os.environ.get("READER_PROXY_MAX_RETRIES", "3"))
@@ -327,7 +329,23 @@ def fetch_page(url, label=""):
                         file=sys.stderr,
                     )
                     break
-                return resp.text
+                # Normalize to NFC before returning. This turned out to be
+                # the actual root cause of the sample-listings feature
+                # matching 0 cards for a long time: r.jina.ai appears to
+                # emit Vietnamese text in NFD (decomposed) form, which is
+                # visually - and even when printed to a log - identical to
+                # NFC, but fails every substring/regex match against an
+                # NFC literal in this source file (e.g. "Ảnh đại diện" in
+                # NFC never matches its own NFD-decomposed self as a
+                # substring). Price-range extraction was never affected
+                # because that path already ran fetched lines through
+                # norm() -> unicodedata.normalize("NFC", ...) as part of
+                # _flatten_to_lines(); listing-card extraction operated on
+                # the raw fetched text directly and had no such step. Now
+                # every consumer of fetch_page()'s return value gets
+                # consistently normalized text, regardless of what form
+                # the source actually sent.
+                return unicodedata.normalize("NFC", resp.text)
 
             print(f"  [{label}] reader proxy didn't return usable content - falling back to a direct fetch.", file=sys.stderr)
             break
