@@ -120,22 +120,23 @@ any matching listing cards just contributes nothing here - no impact on
 the price data either way. Purely illustrative, not a curated or complete
 listing feed.
 
-Note: real listing descriptions on Batdongsan.com.vn are often quite
-long (500+ characters of marketing copy is normal for a "featured"
-listing) - an earlier version of the card-matching regex had a 400-
-character cap that silently failed to match anything past that length,
-which meant it was finding 0 listings on every single page despite the
-price-range extraction on those same pages working fine. Fixed by
-matching card content up to the closing bracket with no length cap, and
-hardened against listing descriptions that contain a stray "]"
-character themselves (common in bracket-decorated ad copy like
-"[Chính chủ]"), which the original character-class-based pattern would
-have mistaken for the closing bracket. If this still comes back with 0
-listings, `fetch_batdongsan_category` now logs a real diagnostic - either
-confirming "Ảnh đại diện" doesn't appear in the response at all (format
-changed further), or showing the actual text around it if it's present
-but still not matching, so a next fix is based on real evidence rather
-than another guess.
+Note: an earlier version of the card-matching regex assumed "Ảnh đại
+diện" appeared as plain link text (based on inspecting these pages
+through a different fetch path than what the actual GitHub Actions
+workflow uses) - it never does. A production diagnostic dump confirmed
+the real structure: each photo is a proper Markdown image tag
+(`![Image N: Ảnh đại diện](https://file4.batdongsan.com.vn/...)`) nested
+*inside* the listing's outer link, which is why it was finding 0 listings
+on every single page despite being fetched correctly - the pattern was
+looking for something that structurally never existed. Fixed by matching
+on the real structure, distinguishing the listing's own closing link
+(`](https://batdongsan.com.vn/...)`) from the embedded images' closings
+(`](https://file4.batdongsan.com.vn/...)`) by host. This also means the
+real photo URL now comes for free out of the same content already being
+fetched for price data - the separate per-listing `og:image` fetch
+(`fetch_listing_image`) is now only a fallback for the rare listing that
+doesn't have an image, not the default path, so this feature costs
+close to zero extra requests now instead of one per listing.
 
 ## Typical total price section
 
