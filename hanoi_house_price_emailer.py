@@ -499,19 +499,36 @@ def render_change_text(rows):
 # alongside the price summary, so this just extracts a few of them as a
 # by-product of the existing fetch.
 #
-# Listing cards only parse out of the reader-proxy's Markdown rendering
-# (they appear as "[Ảnh đại diện ...](url "title")" links) - a raw HTML
-# direct-fetch fallback won't match this regex, so districts that fell
-# back to a direct fetch just won't contribute a sample, which is fine
-# given this is illustrative, not the main price data.
+# Confirmed structure (via a production diagnostic dump, not assumption):
+# each listing card is an outer Markdown link whose *link text* contains
+# one or more embedded photo images before the descriptive text - e.g.
+#   [![Image 1: Ảnh đại diện](https://file4.batdongsan.com.vn/crop/.../a.jpg)![Image 2: Ảnh đại diện](https://file4.batdongsan.com.vn/crop/.../b.jpg)
+#    TITLE PRICE ·AREA m² ... P. WARD (...)](https://batdongsan.com.vn/listing-url "title")
+# An earlier version of this assumed "Ảnh đại diện" appeared as plain
+# link text (based on inspecting these pages through a different fetch
+# path than what the actual GitHub Actions run uses) - it never does;
+# it's always the alt text of a nested image tag, which is why the old
+# pattern matched 0 cards on every single page despite being fetched
+# correctly. The outer closing is distinguished from the inner images'
+# closings by host: images close with "](https://file4.batdongsan.com.vn/...)",
+# the real listing link closes with "](https://batdongsan.com.vn/...)"
+# (no "file4." subdomain) - matching specifically on the latter lets the
+# scan correctly skip over any number of embedded images to find the
+# actual listing URL.
+#
+# This only parses out of the reader-proxy's Markdown rendering; a raw
+# HTML direct-fetch fallback won't match, so districts that fell back to
+# a direct fetch just won't contribute a sample - fine, since this is
+# illustrative, not the main price data.
 # ---------------------------------------------------------------------------
 
 SAMPLE_LISTINGS = []  # reset per run in cmd_generate(); populated by fetch_batdongsan_category
 
 LISTING_LINK_RE = re.compile(
-    r'\[(Ảnh đại diện.*?)\]\((https://batdongsan\.com\.vn/[^\s\)]+)(?:\s+"([^"]*)")?\)',
+    r'\[(.*?Ảnh đại diện.*?)\]\((https://batdongsan\.com\.vn/[^\s\)]+)(?:\s+"([^"]*)")?\)',
     re.DOTALL,
 )
+LISTING_IMAGE_RE = re.compile(r'!\[Image \d+: Ảnh đại diện\]\((https://[^\s\)]+)\)')
 # Price and area are anchored together via "·" in the card format
 # ("1.250 tỷ ·476,4 m²") - matching them as one pair rather than
 # separately avoids false-matching an unrelated price mentioned earlier
@@ -539,7 +556,13 @@ def extract_sample_listings(content, category_label, district_label, max_samples
         if not pa_m:
             continue
         ward_m = LISTING_WARD_RE.search(link_text)
-        title = (title_attr or "").strip() or link_text[:80].strip()
+        img_m = LISTING_IMAGE_RE.search(link_text)
+        title = (title_attr or "").strip()
+        if not title:
+            # Fall back to the link text with embedded image markdown
+            # stripped out, since raw link text otherwise starts with
+            # "![Image 1: Ảnh đại diện](...)..." noise.
+            title = LISTING_IMAGE_RE.sub("", link_text).strip()[:80].strip()
         out.append({
             "category": category_label,
             "district": district_label,
@@ -548,6 +571,7 @@ def extract_sample_listings(content, category_label, district_label, max_samples
             "area": pa_m.group(2).strip(),
             "ward": ward_m.group(1).strip() if ward_m else district_label,
             "url": url,
+            "image": img_m.group(1) if img_m else None,
         })
     return out
 
@@ -588,11 +612,16 @@ def fetch_listing_image(url, label):
 
 
 def attach_listing_images(listings):
-    """Mutates each listing dict in place, adding an 'image' key (URL or
-    None). One extra fetch per listing - only called on the small final
-    subset actually going in the email, not every candidate found.
+    """Mutates each listing dict in place, filling in an 'image' key for
+    any listing that doesn't already have one. Most listings now get
+    their image for free from extract_sample_listings (pulled directly
+    out of the card's embedded photo tag, no extra request) - this is
+    only a fallback fetch for the remainder, so it costs far fewer
+    requests than before.
     """
     for l in listings:
+        if l.get("image"):
+            continue
         l["image"] = fetch_listing_image(l["url"], label=f"Image/{l['district']}")
     return listings
 
