@@ -559,22 +559,26 @@ LISTING_MAX_PRICE_TY = float(_max_price_env) if _max_price_env.strip() else None
 
 
 def _vn_price_number_to_float(num_str):
-    """Parse a Vietnamese-formatted number where '.' may be a thousands
-    separator (e.g. '1.250' meaning 1250, not 1.25) rather than a
-    decimal point - this matters for total listing prices, which can run
-    into the thousands (a hotel/commercial listing at "1.250 tỷ" is a
-    1,250 tỷ property, not a 1.25 tỷ one), unlike the per-m² prices
-    parsed elsewhere in this script, which don't need this handling
-    since they haven't been observed using thousands grouping.
+    """Parse a Vietnamese-formatted number for a total listing price.
+
+    Just delegates to _vn_to_float (comma as decimal point, dots left
+    alone) rather than trying to guess when a dot is a thousands
+    separator. An earlier version tried to detect "dot followed by
+    exactly 3 digits" as a thousands separator (reasoning from a single
+    example: a hotel listed at "1.250 tỷ", genuinely a 1,250 tỷ
+    property) - applied broadly, that heuristic was wrong far more often
+    than right, since ordinary listings commonly show a price like
+    "2.500 tỷ" meaning 2.5 tỷ (three decimal places as a formatting
+    convention), not 2,500 tỷ. That misparse inflated ordinary prices
+    into absurd values, which is why a real run found 278 candidate
+    listings and the price filter passed exactly 0 of them - every
+    normal price got read as 1000x too large. Being wrong in the "too
+    cheap" direction here is far less harmful than "too expensive" (the
+    actual price string is always shown in the card regardless, so a
+    misparse doesn't hide anything from the person reading the email),
+    so plain decimal parsing is the safer default.
     """
-    if "," in num_str:
-        # comma present -> it's the decimal point, dots are thousands separators
-        return float(num_str.replace(".", "").replace(",", "."))
-    if re.fullmatch(r'\d{1,3}(\.\d{3})+', num_str):
-        # no comma, but a dot followed by exactly 3 digits (grouping
-        # pattern) - thousands separator, not a decimal point
-        return float(num_str.replace(".", ""))
-    return float(num_str)
+    return _vn_to_float(num_str)
 
 
 def listing_price_to_ty(price_str):
