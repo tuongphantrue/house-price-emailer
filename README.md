@@ -116,23 +116,26 @@ whatever passes the filter. To have more to choose from,
 candidate listings are pulled from each district page before filtering -
 raise this if a run isn't finding enough matches under the price cap.
 
-Note on price parsing: an earlier version tried to detect "." as a
-thousands separator (e.g. reading "1.250 tỷ" as 1,250 tỷ) based on a
-single hotel-listing example. Applied broadly, that was a real
-regression: ordinary listings commonly show a price like "2.500 tỷ"
-meaning 2.5 tỷ (three decimal places as a formatting convention), not
-2,500 tỷ - so every normal price got read as roughly 1000x too large,
-and a real run found 278 candidate listings with the price filter
-passing exactly 0 of them. Reverted to plain decimal parsing (dots left
-alone, comma as the decimal point) - the same approach already used
-correctly everywhere else in this script. This does mean a genuine
-thousands-formatted outlier like that hotel would now be misread as a
-much smaller number, but that's a far safer failure mode here: the
-actual price string is always shown in the card regardless, so a
-misparse doesn't hide anything from the person reading the email, it
-just occasionally lets something through the filter that shouldn't be
-(immediately visible from the card itself), rather than filtering out
-every normal listing.
+Note on price parsing: prices shaped like "X.YYY tỷ" (a dot followed by
+exactly 3 digits) are genuinely ambiguous - "2.500 tỷ" commonly means
+2.5 tỷ (three decimal places as a formatting convention), but a listing
+can also genuinely mean 1,250 tỷ by "1.250 tỷ" (a real example: a 476m²
+central Hoàn Kiếm street-front property, where 1.25 tỷ would work out to
+~2.6 triệu/m² - cheaper than any land anywhere in Hanoi, obviously wrong,
+while 1,250 tỷ - ~2,626 triệu/m² - fits right in with what that category
+actually costs on a prime street). There's no way to tell from the
+string alone, so when a listing's area is available, this checks
+price/m² under both interpretations and picks whichever is plausible for
+Hanoi real estate. That check has a real blind spot, though: it assumes
+the listed area is land footprint, but for a multi-story building it can
+instead be total floor area summed across every story, which the string
+alone doesn't distinguish either. Rather than have a *third* silent
+guessing strategy after two different ones each caused a real, visible
+mistake (inflating ordinary prices 1000x, then letting a nine-figure
+property through a "< 2 tỷ" filter), an ambiguous price that can't be
+confidently resolved - no area given, or both/neither interpretation
+looks plausible - is now simply left out of the results rather than
+guessed at either way.
 
 Finding the *candidate* listings costs no extra requests (those pages
 already contain listing cards alongside the aggregate price data), but
