@@ -558,43 +558,79 @@ _max_price_env = os.environ.get("LISTING_MAX_PRICE_TY", "2")
 LISTING_MAX_PRICE_TY = float(_max_price_env) if _max_price_env.strip() else None
 
 
-def _vn_price_number_to_float(num_str):
-    """Parse a Vietnamese-formatted number for a total listing price.
-
-    Just delegates to _vn_to_float (comma as decimal point, dots left
-    alone) rather than trying to guess when a dot is a thousands
-    separator. An earlier version tried to detect "dot followed by
-    exactly 3 digits" as a thousands separator (reasoning from a single
-    example: a hotel listed at "1.250 tỷ", genuinely a 1,250 tỷ
-    property) - applied broadly, that heuristic was wrong far more often
-    than right, since ordinary listings commonly show a price like
-    "2.500 tỷ" meaning 2.5 tỷ (three decimal places as a formatting
-    convention), not 2,500 tỷ. That misparse inflated ordinary prices
-    into absurd values, which is why a real run found 278 candidate
-    listings and the price filter passed exactly 0 of them - every
-    normal price got read as 1000x too large. Being wrong in the "too
-    cheap" direction here is far less harmful than "too expensive" (the
-    actual price string is always shown in the card regardless, so a
-    misparse doesn't hide anything from the person reading the email),
-    so plain decimal parsing is the safer default.
-    """
-    return _vn_to_float(num_str)
+# Plausible price/m2 range for Hanoi real estate, in trieu/m2, used to
+# disambiguate ambiguous total prices below - covers everything observed
+# across categories so far, from cheap outlying-huyen land (~60) up to
+# prime Hoan Kiem street frontage (~2950), with margin on both ends.
+PLAUSIBLE_PRICE_PER_M2_TRIEU = (15, 4000)
 
 
-def listing_price_to_ty(price_str):
+def listing_price_to_ty(price_str, area_m2_str=None):
     """Convert a listing's price string ('15 tỷ', '6,4 tỷ', '1.250 tỷ',
     '980 triệu', 'Giá thỏa thuận') into a comparable value in tỷ đồng
     (billions of VND), or None if it can't be parsed as a number (e.g.
     negotiable price with no figure).
+
+    A price shaped like "X.YYY" (a dot followed by exactly 3 digits, no
+    comma) is genuinely ambiguous - it could be a decimal (e.g. "2.500
+    tỷ" commonly means 2.5 tỷ, three decimal places as a formatting
+    convention) or a thousands separator (e.g. a hotel listing at
+    "1.250 tỷ" can genuinely mean 1,250 tỷ). There's no way to tell from
+    the string alone, and guessing wrong in either direction has already
+    caused real bugs here - once by inflating ordinary apartment prices
+    1000x, once by letting a nine-figure central-Hanoi commercial
+    property slip through a "< 2 tỷ" filter as if it were a small
+    apartment. So when area_m2_str is available, this instead computes
+    price/m² under both interpretations and picks whichever lands in a
+    plausible range for Hanoi real estate - a 476m² central street-front
+    property at "1.25 tỷ" implies ~2.6 triệu/m², far below what land
+    costs anywhere in Hanoi, while "1,250 tỷ" implies ~2,626 triệu/m²,
+    right in line with what prime addresses in that category actually
+    go for.
+
+    Caveat: this assumes area_m2_str is the land footprint, but for a
+    multi-story street-front building it can instead be total floor
+    area summed across every story (a 5-floor building on a modest
+    ~95m² plot might list "476 m²" as combined floor area, not land) -
+    there's no reliable way to tell which from the string alone. So this
+    is a real heuristic with a real blind spot, not a solved
+    disambiguation. Given that, if both interpretations land in the
+    plausible range, or area isn't available, or neither is plausible,
+    this returns None (skip the listing) rather than guessing - two
+    different guessing strategies have both caused real, user-visible
+    mistakes here already (inflating ordinary prices 1000x, and letting
+    a nine-figure central-Hanoi property through a "< 2 tỷ" filter), so
+    when genuinely unresolved, the listing is left out rather than
+    risking a third wrong guess.
     """
     if "thỏa thuận" in price_str.lower():
         return None
     m = re.search(r'([\d][\d.,]*)\s*(tỷ|triệu)', price_str, re.IGNORECASE)
     if not m:
         return None
-    value = _vn_price_number_to_float(m.group(1))
-    unit = m.group(2).lower()
-    return value if unit == "tỷ" else value / 1000
+    num_str, unit = m.group(1), m.group(2).lower()
+
+    if "," in num_str or not re.fullmatch(r'\d{1,3}(\.\d{3})+', num_str):
+        value = _vn_to_float(num_str)
+        return value if unit == "tỷ" else value / 1000
+
+    decimal_ty = float(num_str) if unit == "tỷ" else float(num_str) / 1000
+    thousands_ty = float(num_str.replace(".", "")) if unit == "tỷ" else float(num_str.replace(".", "")) / 1000
+
+    area = None
+    if area_m2_str:
+        try:
+            area = _vn_to_float(area_m2_str)
+        except ValueError:
+            area = None
+
+    if area and area > 0:
+        lo, hi = PLAUSIBLE_PRICE_PER_M2_TRIEU
+        plausible = [ty for ty in (decimal_ty, thousands_ty) if lo <= (ty * 1000) / area <= hi]
+        if len(plausible) == 1:
+            return plausible[0]
+
+    return None
 
 LISTING_LINK_RE = re.compile(
     r'\[(.*?Ảnh đại diện.*?)\]\((https://batdongsan\.com\.vn/[^\s\)]+)(?:\s+"([^"]*)")?\)',
@@ -1136,7 +1172,7 @@ def cmd_generate():
 
     candidates = SAMPLE_LISTINGS
     if LISTING_MAX_PRICE_TY is not None:
-        priced = [(l, listing_price_to_ty(l["price"])) for l in candidates]
+        priced = [(l, listing_price_to_ty(l["price"], l.get("area"))) for l in candidates]
         candidates = [l for l, ty in priced if ty is not None and ty <= LISTING_MAX_PRICE_TY]
         print(f"Filtered to {len(candidates)}/{len(SAMPLE_LISTINGS)} listing(s) at or under {LISTING_MAX_PRICE_TY:g} tỷ (listings with an unparseable or negotiable price are excluded, not assumed to pass).")
 
