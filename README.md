@@ -95,30 +95,42 @@ happen in one place.
 ## Sample listings section
 
 The email also includes a "Nhà mẫu tham khảo" (sample listings) section
-with a handful of real, individual property listings - title, total
-price, area, a photo, and a link - pulled from the same Batdongsan.com.vn
-pages already being fetched for the price-range tables above. Finding
-the *candidate* listings costs no extra requests (those pages already
-contain listing cards alongside the aggregate price data), but getting a
-real *photo* for each one does: the card thumbnails on category/district
-pages are lazy-loaded and don't expose a real image URL in the fetched
-content, so each selected listing's own detail page is fetched separately
-to read its `og:image` meta tag, which - unlike the lazy-loaded card
-thumbnail - is set server-side and reliably present. This only happens
-for the small final subset actually going in the email (`MAX_SAMPLE_LISTINGS`,
-default 8), not every candidate found, so it's a bounded number of extra
-requests. A listing without a resolvable image just renders without one
-rather than breaking the layout. Set `FETCH_LISTING_IMAGES=false` to skip
-this and keep listings text-only (faster, fewer requests).
+with real, individual property listings - title, total price, area, a
+photo, and a link - pulled from the same Batdongsan.com.vn pages already
+being fetched for the price-range tables above.
+
+**Price filter**: only listings at or under `LISTING_MAX_PRICE_TY` tỷ
+đồng (default `2`, i.e. 2 billion VND) are shown. Listings priced "Giá
+thỏa thuận" (negotiable, no figure given) are excluded rather than
+assumed to pass, since there's no number to check against. Worth knowing:
+"Nhà mặt phố" (street-front) and "Đất nền" (land) in central Hanoi
+districts are almost never under 2 tỷ - even a small plot runs well past
+that at the per-m² rates those categories show - so most matches
+realistically come from "Chung cư" (apartments) and maybe outer-district
+"Nhà riêng". Set `LISTING_MAX_PRICE_TY=` (empty) to disable the filter
+and show everything found.
+
+Up to `MAX_SAMPLE_LISTINGS` (default 15) are chosen at random from
+whatever passes the filter. To have more to choose from,
+`LISTING_CANDIDATES_PER_DISTRICT` (default 6) controls how many
+candidate listings are pulled from each district page before filtering -
+raise this if a run isn't finding enough matches under the price cap.
+
+Finding the *candidate* listings costs no extra requests (those pages
+already contain listing cards alongside the aggregate price data), but
+getting a *photo* for each one mostly doesn't either anymore - the real
+photo URL comes directly out of the same card content (see the note
+below on the card structure), so the separate per-listing `og:image`
+fetch (`fetch_listing_image`) is now only a fallback for the rare listing
+that doesn't have an embedded image, not the default path.
 
 Only works when the reader-proxy path succeeds for the category/district
 fetch (the listing cards are parsed from its Markdown output; a
-direct-fetch fallback's raw HTML won't match the card-parsing regex,
-though it *will* still work for the og:image fetch, which handles both
-formats), and a district whose price-range page doesn't happen to show
-any matching listing cards just contributes nothing here - no impact on
-the price data either way. Purely illustrative, not a curated or complete
-listing feed.
+direct-fetch fallback's raw HTML won't match the card-parsing regex), and
+a district whose price-range page doesn't happen to show any matching
+listing cards just contributes nothing here - no impact on the price
+data either way. Purely illustrative, not a curated or complete listing
+feed.
 
 Note: an earlier version of the card-matching regex assumed "Ảnh đại
 diện" appeared as plain link text (based on inspecting these pages
