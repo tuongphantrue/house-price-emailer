@@ -542,6 +542,56 @@ def render_change_text(rows):
 
 SAMPLE_LISTINGS = []  # reset per run in cmd_generate(); populated by fetch_batdongsan_category
 
+# How many candidate listings to pull per district page before filtering
+# (a bigger pool means more chances of finding ones under the price cap,
+# since a district page's first few "featured" listings tend to skew
+# toward premium/expensive properties) and how many make it into the
+# final email after filtering.
+LISTING_CANDIDATES_PER_DISTRICT = int(os.environ.get("LISTING_CANDIDATES_PER_DISTRICT", "6"))
+
+# Only show listings at or under this total price, in tỷ đồng (billions
+# of VND). None disables the filter (show everything found). Listings
+# priced "Giá thỏa thuận" (negotiable, no figure given) are excluded
+# when a cap is set, since there's no number to compare against - not
+# assumed to pass or fail the cap.
+_max_price_env = os.environ.get("LISTING_MAX_PRICE_TY", "2")
+LISTING_MAX_PRICE_TY = float(_max_price_env) if _max_price_env.strip() else None
+
+
+def _vn_price_number_to_float(num_str):
+    """Parse a Vietnamese-formatted number where '.' may be a thousands
+    separator (e.g. '1.250' meaning 1250, not 1.25) rather than a
+    decimal point - this matters for total listing prices, which can run
+    into the thousands (a hotel/commercial listing at "1.250 tỷ" is a
+    1,250 tỷ property, not a 1.25 tỷ one), unlike the per-m² prices
+    parsed elsewhere in this script, which don't need this handling
+    since they haven't been observed using thousands grouping.
+    """
+    if "," in num_str:
+        # comma present -> it's the decimal point, dots are thousands separators
+        return float(num_str.replace(".", "").replace(",", "."))
+    if re.fullmatch(r'\d{1,3}(\.\d{3})+', num_str):
+        # no comma, but a dot followed by exactly 3 digits (grouping
+        # pattern) - thousands separator, not a decimal point
+        return float(num_str.replace(".", ""))
+    return float(num_str)
+
+
+def listing_price_to_ty(price_str):
+    """Convert a listing's price string ('15 tỷ', '6,4 tỷ', '1.250 tỷ',
+    '980 triệu', 'Giá thỏa thuận') into a comparable value in tỷ đồng
+    (billions of VND), or None if it can't be parsed as a number (e.g.
+    negotiable price with no figure).
+    """
+    if "thỏa thuận" in price_str.lower():
+        return None
+    m = re.search(r'([\d][\d.,]*)\s*(tỷ|triệu)', price_str, re.IGNORECASE)
+    if not m:
+        return None
+    value = _vn_price_number_to_float(m.group(1))
+    unit = m.group(2).lower()
+    return value if unit == "tỷ" else value / 1000
+
 LISTING_LINK_RE = re.compile(
     r'\[(.*?Ảnh đại diện.*?)\]\((https://batdongsan\.com\.vn/[^\s\)]+)(?:\s+"([^"]*)")?\)',
     re.DOTALL,
@@ -661,10 +711,12 @@ def render_sample_listings_html(listings):
     </table>"""
         for l in listings
     )
-    eyebrow = section_eyebrow_html(
-        "Tin đăng thực tế", "Nhà mẫu tham khảo",
-        "Một vài tin đăng thực tế lấy từ Batdongsan.com.vn, chỉ mang tính minh họa - không phải danh sách đầy đủ hay gợi ý mua.",
-    )
+    title = "Nhà mẫu tham khảo"
+    subtitle = "Một vài tin đăng thực tế lấy từ Batdongsan.com.vn, chỉ mang tính minh họa - không phải danh sách đầy đủ hay gợi ý mua."
+    if LISTING_MAX_PRICE_TY is not None:
+        title += f" (dưới {LISTING_MAX_PRICE_TY:g} tỷ)"
+        subtitle += f" Chỉ hiển thị tin có giá ≤ {LISTING_MAX_PRICE_TY:g} tỷ - tin ghi 'giá thỏa thuận' (không có số) không được tính vào đây."
+    eyebrow = section_eyebrow_html("Tin đăng thực tế", title, subtitle)
     return f"""
   {eyebrow}
   <div style="margin-top:12px;">{cards}</div>"""
@@ -673,7 +725,11 @@ def render_sample_listings_html(listings):
 def render_sample_listings_text(listings):
     if not listings:
         return ""
-    lines = ["== NHA MAU THAM KHAO (tin dang thuc te) =="]
+    header = "== NHA MAU THAM KHAO"
+    if LISTING_MAX_PRICE_TY is not None:
+        header += f" (duoi {LISTING_MAX_PRICE_TY:g} ty)"
+    header += " =="
+    lines = [header]
     for l in listings:
         lines.append(f"[{l['category']}] {l['title']} - {l['price']} - {l['area']} m2 - {l['ward']}")
         lines.append(f"  {l['url']}")
@@ -693,7 +749,7 @@ def fetch_batdongsan_category(url_prefix, label):
             print(f"  [{label}/{slug}] fetch failed: {e}", file=sys.stderr)
             continue
         before = len(SAMPLE_LISTINGS)
-        SAMPLE_LISTINGS.extend(extract_sample_listings(html, category_label=label, district_label=name))
+        SAMPLE_LISTINGS.extend(extract_sample_listings(html, category_label=label, district_label=name, max_samples=LISTING_CANDIDATES_PER_DISTRICT))
         if len(SAMPLE_LISTINGS) == before and not diagnosed:
             # 0 listings found on this page - show what's actually there
             # instead of guessing at the format again. Only once per
@@ -1074,11 +1130,17 @@ def cmd_generate():
     print(f"\n{len(results)}/{len(SOURCES)} source(s) returned data this run.")
     print(f"Collected {len(SAMPLE_LISTINGS)} sample listing(s) as a by-product of the fetches above.")
 
-    max_listings = int(os.environ.get("MAX_SAMPLE_LISTINGS", "8"))
-    if len(SAMPLE_LISTINGS) > max_listings:
-        listings = random.sample(SAMPLE_LISTINGS, max_listings)
+    candidates = SAMPLE_LISTINGS
+    if LISTING_MAX_PRICE_TY is not None:
+        priced = [(l, listing_price_to_ty(l["price"])) for l in candidates]
+        candidates = [l for l, ty in priced if ty is not None and ty <= LISTING_MAX_PRICE_TY]
+        print(f"Filtered to {len(candidates)}/{len(SAMPLE_LISTINGS)} listing(s) at or under {LISTING_MAX_PRICE_TY:g} tỷ (listings with an unparseable or negotiable price are excluded, not assumed to pass).")
+
+    max_listings = int(os.environ.get("MAX_SAMPLE_LISTINGS", "15"))
+    if len(candidates) > max_listings:
+        listings = random.sample(candidates, max_listings)
     else:
-        listings = list(SAMPLE_LISTINGS)
+        listings = list(candidates)
 
     if listings and os.environ.get("FETCH_LISTING_IMAGES", "true").lower() == "true":
         attach_listing_images(listings)
