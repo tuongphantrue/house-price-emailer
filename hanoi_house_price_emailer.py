@@ -547,7 +547,7 @@ SAMPLE_LISTINGS = []  # reset per run in cmd_generate(); populated by fetch_batd
 # since a district page's first few "featured" listings tend to skew
 # toward premium/expensive properties) and how many make it into the
 # final email after filtering.
-LISTING_CANDIDATES_PER_DISTRICT = int(os.environ.get("LISTING_CANDIDATES_PER_DISTRICT", "6"))
+LISTING_CANDIDATES_PER_DISTRICT = int(os.environ.get("LISTING_CANDIDATES_PER_DISTRICT", "25"))
 
 # Only show listings at or under this total price, in tỷ đồng (billions
 # of VND). None disables the filter (show everything found). Listings
@@ -1175,6 +1175,16 @@ def cmd_generate():
         priced = [(l, listing_price_to_ty(l["price"], l.get("area"))) for l in candidates]
         candidates = [l for l, ty in priced if ty is not None and ty <= LISTING_MAX_PRICE_TY]
         print(f"Filtered to {len(candidates)}/{len(SAMPLE_LISTINGS)} listing(s) at or under {LISTING_MAX_PRICE_TY:g} tỷ (listings with an unparseable or negotiable price are excluded, not assumed to pass).")
+        if len(candidates) < 3 and priced:
+            resolved = [ty for _, ty in priced if ty is not None]
+            unresolved = sum(1 for _, ty in priced if ty is None)
+            sample = sorted((l["price"], l.get("area"), ty) for l, ty in priced[:15])
+            print(
+                f"  diagnostic: {len(resolved)} resolved (min={min(resolved) if resolved else 'n/a'}, "
+                f"max={max(resolved) if resolved else 'n/a'} tỷ), {unresolved} unresolved/skipped. "
+                f"First 15 (price, area, resolved_ty): {sample}",
+                file=sys.stderr,
+            )
 
     max_listings = int(os.environ.get("MAX_SAMPLE_LISTINGS", "15"))
     if len(candidates) > max_listings:
