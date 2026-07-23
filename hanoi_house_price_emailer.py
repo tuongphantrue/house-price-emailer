@@ -558,91 +558,33 @@ _max_price_env = os.environ.get("LISTING_MAX_PRICE_TY", "2")
 LISTING_MAX_PRICE_TY = float(_max_price_env) if _max_price_env.strip() else None
 
 
-# Plausible price/m2 range for Hanoi real estate, in trieu/m2, used to
-# disambiguate ambiguous total prices below - covers everything observed
-# across categories so far, from cheap outlying-huyen land (~60) up to
-# prime Hoan Kiem street frontage (~2950), with margin on both ends.
-PLAUSIBLE_PRICE_PER_M2_TRIEU = (15, 4000)
-
-
 def listing_price_to_ty(price_str, area_m2_str=None):
     """Convert a listing's price string ('15 tỷ', '6,4 tỷ', '1.250 tỷ',
     '980 triệu', 'Giá thỏa thuận') into a comparable value in tỷ đồng
     (billions of VND), or None if it can't be parsed as a number (e.g.
     negotiable price with no figure).
 
-    A price shaped like "X.YYY" (a dot followed by exactly 3 digits, no
-    comma) is genuinely ambiguous - it could be a decimal (e.g. "2.500
-    tỷ" commonly means 2.5 tỷ, three decimal places as a formatting
-    convention) or a thousands separator (e.g. a hotel listing at
-    "1.250 tỷ" can genuinely mean 1,250 tỷ). There's no way to tell from
-    the string alone, and guessing wrong in either direction has already
-    caused real bugs here - once by inflating ordinary apartment prices
-    1000x, once by letting a nine-figure central-Hanoi commercial
-    property slip through a "< 2 tỷ" filter as if it were a small
-    apartment. So when area_m2_str is available, this instead computes
-    price/m² under both interpretations and picks whichever lands in a
-    plausible range for Hanoi real estate - a 476m² central street-front
-    property at "1.25 tỷ" implies ~2.6 triệu/m², far below what land
-    costs anywhere in Hanoi, while "1,250 tỷ" implies ~2,626 triệu/m²,
-    right in line with what prime addresses in that category actually
-    go for.
-
-    Caveat: this assumes area_m2_str is the land footprint, but for a
-    multi-story street-front building it can instead be total floor
-    area summed across every story (a 5-floor building on a modest
-    ~95m² plot might list "476 m²" as combined floor area, not land) -
-    there's no reliable way to tell which from the string alone. So this
-    is a real heuristic with a real blind spot, not a solved
-    disambiguation. Given that, if both interpretations land in the
-    plausible range, or area isn't available, or neither is plausible,
-    this returns None (skip the listing) rather than guessing - two
-    different guessing strategies have both caused real, user-visible
-    mistakes here already (inflating ordinary prices 1000x, and letting
-    a nine-figure central-Hanoi property through a "< 2 tỷ" filter), so
-    when genuinely unresolved, the listing is left out rather than
-    risking a third wrong guess.
+    Uses standard Vietnamese numeric convention via _vn_to_float: "."
+    is the thousands separator, "," is the decimal point - the reverse
+    of English convention, applied consistently. "1.250 tỷ" (a hotel
+    listing) means 1,250 tỷ; "1,1 tỷ" (a small apartment) means 1.1 tỷ.
+    An earlier version of this treated "X.YYY"-shaped prices as
+    ambiguous and tried to guess between the two readings using the
+    listing's area as a plausibility check - that whole apparatus was
+    solving a problem that didn't actually exist: every real example
+    encountered while building this script fit the single consistent
+    rule with no ambiguity at all. The area_m2_str parameter is no
+    longer used for disambiguation but is still accepted for backward
+    compatibility with existing call sites.
     """
     if "thỏa thuận" in price_str.lower():
         return None
     m = re.search(r'([\d][\d.,]*)\s*(tỷ|triệu)', price_str, re.IGNORECASE)
     if not m:
         return None
-    num_str, unit = m.group(1), m.group(2).lower()
-
-    if "," in num_str or not re.fullmatch(r'\d{1,3}(\.\d{3})+', num_str):
-        value = _vn_to_float(num_str)
-        return value if unit == "tỷ" else value / 1000
-
-    decimal_ty = float(num_str) if unit == "tỷ" else float(num_str) / 1000
-    thousands_ty = float(num_str.replace(".", "")) if unit == "tỷ" else float(num_str.replace(".", "")) / 1000
-
-    area = None
-    if area_m2_str and not re.fullmatch(r'\d{1,3}(\.\d{3})+', area_m2_str.strip()):
-        # Only trust the area for disambiguation if it ISN'T itself
-        # shaped like an ambiguous thousands/decimal number (e.g.
-        # "1.300" for a 1,300 m² land parcel). If both the price and
-        # the area are ambiguous in the same way, price/m² comes out
-        # identical under either consistent interpretation - the check
-        # below can't tell them apart, so it would silently return a
-        # plausible-looking but wrong number instead of correctly
-        # giving up. A real case: "1.950 tỷ" on "1.300 m²" (a Hoàn Kiếm
-        # land listing marketed as "SIÊU PHẨM ĐẤT VÀNG") - both read at
-        # face value give ~1500 triệu/m², and both scaled up by 1000x
-        # give the exact same ~1500 triệu/m², so the ratio genuinely
-        # can't distinguish "1.95 tỷ / 1.3 m²" from "1,950 tỷ / 1,300 m²".
-        try:
-            area = _vn_to_float(area_m2_str)
-        except ValueError:
-            area = None
-
-    if area and area > 0:
-        lo, hi = PLAUSIBLE_PRICE_PER_M2_TRIEU
-        plausible = [ty for ty in (decimal_ty, thousands_ty) if lo <= (ty * 1000) / area <= hi]
-        if len(plausible) == 1:
-            return plausible[0]
-
-    return None
+    value = _vn_to_float(m.group(1))
+    unit = m.group(2).lower()
+    return value if unit == "tỷ" else value / 1000
 
 LISTING_LINK_RE = re.compile(
     r'\[(.*?Ảnh đại diện.*?)\]\((https://batdongsan\.com\.vn/[^\s\)]+)(?:\s+"([^"]*)")?\)',
@@ -945,11 +887,17 @@ TYPICAL_PRICE_CATEGORIES = {
 
 
 def _vn_to_float(s):
-    # Values seen so far are plain integers or a decimal comma (e.g.
-    # "3,5"), never a thousands separator - triệu/m2 magnitudes stay well
-    # under that range. If a source ever sends "1.234,5" style numbers
-    # this will need a thousands-separator-aware version.
-    return float(s.replace(",", "."))
+    # Standard Vietnamese numeric convention, applied consistently: "."
+    # is the thousands separator, "," is the decimal point - the reverse
+    # of English convention. E.g. "1.250" = 1250, "6,4" = 6.4, "1.250,5"
+    # = 1250.5. Every real example encountered while building this
+    # script fits this single rule with no ambiguity - "1.250 tỷ" for a
+    # hotel genuinely means 1,250 tỷ, "1,1 tỷ" for a small apartment
+    # genuinely means 1.1 tỷ. An earlier version only converted the
+    # comma and left dots untouched, which happened to work for
+    # small per-m² values (never dot-grouped in practice) but silently
+    # under-read any total price or area large enough to need grouping.
+    return float(s.replace(".", "").replace(",", "."))
 
 
 def _format_money_trieu(trieu):
