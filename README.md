@@ -116,26 +116,23 @@ whatever passes the filter. To have more to choose from,
 candidate listings are pulled from each district page before filtering -
 raise this if a run isn't finding enough matches under the price cap.
 
-Note on price parsing: prices shaped like "X.YYY tỷ" (a dot followed by
-exactly 3 digits) are genuinely ambiguous - "2.500 tỷ" commonly means
-2.5 tỷ (three decimal places as a formatting convention), but a listing
-can also genuinely mean 1,250 tỷ by "1.250 tỷ" (a real example: a 476m²
-central Hoàn Kiếm street-front property, where 1.25 tỷ would work out to
-~2.6 triệu/m² - cheaper than any land anywhere in Hanoi, obviously wrong,
-while 1,250 tỷ - ~2,626 triệu/m² - fits right in with what that category
-actually costs on a prime street). There's no way to tell from the
-string alone, so when a listing's area is available, this checks
-price/m² under both interpretations and picks whichever is plausible for
-Hanoi real estate. That check has a real blind spot, though: it assumes
-the listed area is land footprint, but for a multi-story building it can
-instead be total floor area summed across every story, which the string
-alone doesn't distinguish either. Rather than have a *third* silent
-guessing strategy after two different ones each caused a real, visible
-mistake (inflating ordinary prices 1000x, then letting a nine-figure
-property through a "< 2 tỷ" filter), an ambiguous price that can't be
-confidently resolved - no area given, or both/neither interpretation
-looks plausible - is now simply left out of the results rather than
-guessed at either way.
+Note on number parsing: Vietnamese numeric convention is the reverse of
+English - "." is the thousands separator, "," is the decimal point (so
+"1.250" means 1250, and "6,4" means 6.4). This script went through
+several wrong turns before landing on that simple, consistent rule:
+first only converting the comma and leaving dots untouched (which
+happened to work for small per-m² values that never needed thousands
+grouping, but silently under-read any large total price - "1.250 tỷ"
+for a hotel came out as 1.25 tỷ, off by 1000x), then trying to guess
+case-by-case using the listing's area as a plausibility check (which
+had its own blind spot when the area was ambiguous in the same way the
+price was, since the ratio between two consistently-mis-scaled numbers
+comes out identical either way). All of that guessing was solving a
+problem that didn't actually need solving: every real example
+encountered while building this - a hotel at "1.250 tỷ", a 1,300 m²
+land parcel at "1.950 tỷ", a small apartment at "1,1 tỷ" - fits the
+single standard convention with no ambiguity at all, once it's applied
+consistently rather than partially.
 
 Finding the *candidate* listings costs no extra requests (those pages
 already contain listing cards alongside the aggregate price data), but
