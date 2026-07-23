@@ -618,7 +618,19 @@ def listing_price_to_ty(price_str, area_m2_str=None):
     thousands_ty = float(num_str.replace(".", "")) if unit == "tỷ" else float(num_str.replace(".", "")) / 1000
 
     area = None
-    if area_m2_str:
+    if area_m2_str and not re.fullmatch(r'\d{1,3}(\.\d{3})+', area_m2_str.strip()):
+        # Only trust the area for disambiguation if it ISN'T itself
+        # shaped like an ambiguous thousands/decimal number (e.g.
+        # "1.300" for a 1,300 m² land parcel). If both the price and
+        # the area are ambiguous in the same way, price/m² comes out
+        # identical under either consistent interpretation - the check
+        # below can't tell them apart, so it would silently return a
+        # plausible-looking but wrong number instead of correctly
+        # giving up. A real case: "1.950 tỷ" on "1.300 m²" (a Hoàn Kiếm
+        # land listing marketed as "SIÊU PHẨM ĐẤT VÀNG") - both read at
+        # face value give ~1500 triệu/m², and both scaled up by 1000x
+        # give the exact same ~1500 triệu/m², so the ratio genuinely
+        # can't distinguish "1.95 tỷ / 1.3 m²" from "1,950 tỷ / 1,300 m²".
         try:
             area = _vn_to_float(area_m2_str)
         except ValueError:
