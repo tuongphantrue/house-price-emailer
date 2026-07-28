@@ -171,12 +171,43 @@ F_DISPLAY = "Georgia, 'Times New Roman', serif"
 F_BODY = "Helvetica, Arial, sans-serif"
 
 
-def section_eyebrow_html(kicker, title, subtitle=None):
-    subtitle_html = f'<div style="font-family:{F_BODY};font-size:12px;color:{C_MUTED};margin-top:4px;">{escape(subtitle)}</div>' if subtitle else ""
-    return f"""
-  <div style="font-family:{F_BODY};font-size:11px;letter-spacing:1.5px;color:{C_EYEBROW};text-transform:uppercase;font-weight:bold;">— {escape(kicker)}</div>
+def collapsible_section_html(section_id, kicker, title, content_html, subtitle=None, open_by_default=True):
+    """Wrap a section's content in a Gmail-compatible collapsible block
+    using the CSS "checkbox hack": a hidden checkbox drives visibility
+    of its sibling content via CSS (:checked ~ selector), toggled by
+    clicking a <label> pointing at that checkbox - still zero
+    JavaScript (email clients block it anyway), but a different
+    mechanism than native <details>/<summary>, which Gmail's HTML
+    sanitizer doesn't reliably preserve as interactive. Requires the
+    shared <style> rules from COLLAPSIBLE_STYLE_BLOCK to be present once
+    in <head> - see build_html().
+
+    section_id must be unique per section on the page (used as the
+    checkbox's id/label's for, so multiple sections don't interfere with
+    each other's toggle state).
+    """
+    subtitle_html = f'<div style="font-family:{F_BODY};font-size:12px;color:{C_MUTED};margin-top:8px;">{escape(subtitle)}</div>' if subtitle else ""
+    checked_attr = " checked" if open_by_default else ""
+    return f"""<input type="checkbox" id="{section_id}" class="toggle-cb"{checked_attr} />
+<label for="{section_id}" class="toggle-label">
+  <div style="display:inline-block;font-family:{F_BODY};font-size:11px;letter-spacing:1.5px;color:{C_EYEBROW};text-transform:uppercase;font-weight:bold;">
+    <span class="toggle-arrow">▾</span> — {escape(kicker)}
+  </div>
   <div style="font-family:{F_DISPLAY};font-size:18px;color:{C_INK};margin-top:2px;">{title}</div>
-  {subtitle_html}"""
+</label>
+<div class="toggle-content">
+  {subtitle_html}
+  <div style="margin-top:12px;">{content_html}</div>
+</div>"""
+
+
+COLLAPSIBLE_STYLE_BLOCK = """
+    .toggle-cb { display: none; }
+    .toggle-label { cursor: pointer; display: block; }
+    .toggle-content { max-height: 3000px; overflow: hidden; }
+    .toggle-cb:not(:checked) ~ .toggle-content { max-height: 0; }
+    .toggle-cb:not(:checked) ~ .toggle-label .toggle-arrow { transform: rotate(-90deg); display: inline-block; }
+"""
 
 
 def norm(s):
@@ -710,10 +741,7 @@ def render_sample_listings_html(listings):
     if LISTING_MAX_PRICE_TY is not None:
         title += f" (dưới {LISTING_MAX_PRICE_TY:g} tỷ)"
         subtitle += f" Chỉ hiển thị tin có giá ≤ {LISTING_MAX_PRICE_TY:g} tỷ - tin ghi 'giá thỏa thuận' (không có số) không được tính vào đây."
-    eyebrow = section_eyebrow_html("Tin đăng thực tế", title, subtitle)
-    return f"""
-  {eyebrow}
-  <div style="margin-top:12px;">{cards}</div>"""
+    return collapsible_section_html("toggle-listings", "Tin đăng thực tế", title, cards, subtitle=subtitle)
 
 
 def render_sample_listings_text(listings):
@@ -960,19 +988,17 @@ def render_typical_price_html(typical):
         + "</tr>"
         for i, t in enumerate(typical)
     )
-    eyebrow = section_eyebrow_html(
-        "Ước tính", "Giá nhà điển hình tại Hà Nội",
-        "Tính từ giá trung bình/m² ở trên nhân với diện tích tham khảo - chỉ mang tính minh họa, không phải giá thực tế của một căn nhà cụ thể.",
-    )
-    return f"""
-  {eyebrow}
-  <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:12px;border-collapse:separate;width:100%;max-width:600px;background:{C_CARD};border:1px solid {C_RULE};border-radius:8px;overflow:hidden;">
+    table_html = f"""<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;width:100%;max-width:600px;background:{C_CARD};border:1px solid {C_RULE};border-radius:8px;overflow:hidden;">
   <thead><tr>
     <th style="padding:10px 16px;text-align:left;font-family:{F_BODY};font-size:11px;color:{C_MUTED};text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid {C_RULE};">Loại hình</th>
     {header_cells}
   </tr></thead>
   <tbody>{body_rows}</tbody>
   </table>"""
+    return collapsible_section_html(
+        "toggle-typical", "Ước tính", "Giá nhà điển hình tại Hà Nội", table_html,
+        subtitle="Tính từ giá trung bình/m² ở trên nhân với diện tích tham khảo - chỉ mang tính minh họa, không phải giá thực tế của một căn nhà cụ thể.",
+    )
 
 
 def render_typical_price_text(typical):
@@ -1029,10 +1055,7 @@ def build_html(results, listings, timestamp):
         sections = "\n".join(
             f"""
 <tr><td style="padding:28px 36px 0;">
-  {section_eyebrow_html(f"Nguồn {i}", escape(r['name']))}
-</td></tr>
-<tr><td style="padding:12px 36px 0;">
-  {r['render_html'](r['rows'])}
+  {collapsible_section_html(f"toggle-src-{i}", f"Nguồn {i}", escape(r['name']), r['render_html'](r['rows']))}
 </td></tr>"""
             for i, r in enumerate(results, start=1)
         )
@@ -1067,6 +1090,9 @@ def build_html(results, listings, timestamp):
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+{COLLAPSIBLE_STYLE_BLOCK}
+  </style>
 </head>
 <body style="margin:0;padding:0;background:{C_BG};font-family:{F_BODY};">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{C_BG};">
