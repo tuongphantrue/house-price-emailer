@@ -68,6 +68,29 @@ belt-and-suspenders fix at the interpreter/OS level too.
 
 ## Design
 
+Each section - every source's table, the typical-price summary, and the
+sample listings - is collapsible using the CSS "checkbox hack": a hidden
+checkbox drives its content's visibility via a CSS sibling selector
+(`:checked ~`), toggled by clicking a `<label>` pointed at that
+checkbox - no JavaScript involved (email clients block it anyway). An
+earlier version used the native HTML `<details>`/`<summary>` element
+instead, which is the more "correct" HTML5 way to do this and needs no
+CSS at all - but Gmail doesn't reliably preserve its interactive
+behavior, even though the markup itself is valid, so it just sat there
+looking static. The checkbox-hack technique is a different mechanism
+(CSS selectors, not element-native behavior) that's specifically
+documented as working in Gmail's CSS engine, which is why this switched
+to it. Verified functionally rather than just structurally: rendered
+both the checked and unchecked HTML through a real browser engine and
+confirmed the collapsed version comes out genuinely shorter (the hidden
+content actually disappears, not just present-but-styled-the-same), not
+just that the checkbox/label tags were there. All sections default open (checked), so the email is fully
+readable at a glance without clicking anything - collapsing is for
+tidying up, not required. In a client that doesn't support the
+`:checked ~` sibling selector, it degrades to showing everything
+expanded permanently, same as before any of this existed - no broken
+layout either way.
+
 The email uses a warm ochre header band (the color of Hanoi's
 French-colonial building facades throughout the Old Quarter) over a cream
 content panel, with a serif/sans type pairing (Georgia for headings and
