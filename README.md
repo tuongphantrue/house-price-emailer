@@ -293,6 +293,38 @@ minutes - Mogi appears to refresh it roughly monthly. Running the workflow
 every 30 minutes will very often just re-send the same numbers unless you
 turn on `SEND_ONLY_ON_CHANGE` (see below).
 
+## Speed
+
+Fetching all 48 Batdongsan.com.vn district pages one at a time (each
+with a pacing delay and possible retries) was the dominant cost of a
+run - several minutes even before counting retries. The per-district
+fetches within each property-type category (12 districts) now run
+concurrently via a small thread pool (`MAX_CONCURRENT_FETCHES`, default
+4) instead of strictly one after another, cutting wall-clock time
+roughly in proportion to the worker count. Pacing and retry limits were
+also trimmed slightly (`READER_PROXY_PACING_SECONDS` 1.5→0.8,
+`READER_PROXY_MAX_RETRIES` 3→2, `READER_PROXY_BACKOFF_SECONDS` 4→3)
+since concurrency naturally spreads requests out somewhat on its own.
+
+Real tradeoff worth knowing about: with several requests in flight at
+once, the aggregate hit rate on the shared reader-proxy service is
+higher than before, which could in principle trigger more `429`
+rate-limiting than the fully-sequential version did - if that happens,
+the existing retry/skip logic handles it the same way as always (that
+district is just left out of the run, not a crash), so a run might come
+back with slightly fewer districts covered in exchange for finishing
+much faster, rather than fully sequential but slower. If that tradeoff
+doesn't sit well, lower `MAX_CONCURRENT_FETCHES` toward `1` to go back
+to sequential-like behavior.
+
+One more real side effect: since multiple threads write to the log at
+once, diagnostic lines from different districts can now interleave
+(e.g. two districts' log lines appearing intermixed rather than each
+district's full output appearing as one clean block) - each individual
+line is still intact, just not always grouped in the tidy per-district
+order earlier logs had. Worth knowing before pasting a log back for
+debugging - the information is all there, just not in the same order.
+
 ## One-time setup (~5 minutes)
 
 1. **Create a GitHub account** if you don't have one: <https://github.com/join>
