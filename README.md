@@ -122,6 +122,15 @@ with real, individual property listings - title, total price, area, a
 photo, and a link - pulled from the same Batdongsan.com.vn pages already
 being fetched for the price-range tables above.
 
+**Category filter**: sample listings default to apartments (Chung cư)
+only, via `LISTING_CATEGORY_FILTER` (default `Chung cư`, matched as a
+substring against the listing's category). Set it to empty to show
+every property type again, or to a different category name (e.g.
+`Nhà riêng`) to switch which one is shown. This only affects which
+*sample listings* appear - the price-range tables for every category
+keep showing regardless, since those come from a separate part of the
+pipeline untouched by this filter.
+
 **Price filter**: only listings at or under `LISTING_MAX_PRICE_TY` tỷ
 đồng (default `2`, i.e. 2 billion VND) are shown. Listings priced "Giá
 thỏa thuận" (negotiable, no figure given) are excluded rather than
