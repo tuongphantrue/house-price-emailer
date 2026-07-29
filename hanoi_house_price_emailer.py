@@ -83,6 +83,7 @@ SETUP
      export ALLOW_INSECURE_SSL_FALLBACK="false" # optional, last-resort TLS bypass
 """
 
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -297,10 +298,10 @@ def _direct_fetch(url, label):
     return unicodedata.normalize("NFC", resp.text)
 
 
-RATE_LIMIT_MAX_RETRIES = int(os.environ.get("READER_PROXY_MAX_RETRIES", "3"))
-RATE_LIMIT_BACKOFF_SECONDS = float(os.environ.get("READER_PROXY_BACKOFF_SECONDS", "4"))
+RATE_LIMIT_MAX_RETRIES = int(os.environ.get("READER_PROXY_MAX_RETRIES", "2"))
+RATE_LIMIT_BACKOFF_SECONDS = float(os.environ.get("READER_PROXY_BACKOFF_SECONDS", "3"))
 READER_PROXY_MIN_BYTES = int(os.environ.get("READER_PROXY_MIN_BYTES", "10000"))
-READER_PROXY_PACING_SECONDS = float(os.environ.get("READER_PROXY_PACING_SECONDS", "1.5"))
+READER_PROXY_PACING_SECONDS = float(os.environ.get("READER_PROXY_PACING_SECONDS", "0.8"))
 
 
 def fetch_page(url, label=""):
@@ -760,35 +761,49 @@ def render_sample_listings_text(listings):
     return "\n".join(lines)
 
 
+def _fetch_one_district(url_prefix, label, name, slug):
+    """Fetch and parse a single district's page. Returns (row_or_None,
+    listings) rather than mutating shared state directly, so this is
+    safe to call from multiple threads concurrently without a lock - the
+    caller aggregates results after collecting them.
+    """
+    url = f"https://batdongsan.com.vn/{url_prefix}-{slug}"
+    try:
+        html = fetch_page(url, label=f"{label}/{slug}")
+    except requests.RequestException as e:
+        print(f"  [{label}/{slug}] fetch failed: {e}", file=sys.stderr)
+        return None, []
+
+    listings = extract_sample_listings(html, category_label=label, district_label=name, max_samples=LISTING_CANDIDATES_PER_DISTRICT)
+    if not listings:
+        marker_count = html.count("Ảnh đại diện")
+        if marker_count == 0:
+            print(f"  [{label}/{slug}] listings diagnostic: 'Ảnh đại diện' does not appear anywhere in the {len(html)}-byte response - the card format has likely changed. First 500 chars: {html[:500]!r}", file=sys.stderr)
+        else:
+            idx = html.find("Ảnh đại diện")
+            print(f"  [{label}/{slug}] listings diagnostic: 'Ảnh đại diện' appears {marker_count}x but the card regex still didn't match. Snippet around first occurrence: {html[max(0,idx-50):idx+500]!r}", file=sys.stderr)
+
+    text = norm(" ".join(_flatten_to_lines(html)))
+    m = BDS_RANGE_RE.search(text) or BDS_RANGE_SHARED_UNIT_RE.search(text)
+    if not m:
+        print(f"  [{label}/{slug}] no price range found in response - skipping this district.", file=sys.stderr)
+        return None, listings
+    return {"area": name, "low": m.group(1), "high": m.group(2)}, listings
+
+
 def fetch_batdongsan_category(url_prefix, label):
     rows = []
-    diagnosed = False
-    for name, slug in DISTRICT_SLUGS:
-        url = f"https://batdongsan.com.vn/{url_prefix}-{slug}"
-        try:
-            html = fetch_page(url, label=f"{label}/{slug}")
-        except requests.RequestException as e:
-            print(f"  [{label}/{slug}] fetch failed: {e}", file=sys.stderr)
-            continue
-        before = len(SAMPLE_LISTINGS)
-        SAMPLE_LISTINGS.extend(extract_sample_listings(html, category_label=label, district_label=name, max_samples=LISTING_CANDIDATES_PER_DISTRICT))
-        if len(SAMPLE_LISTINGS) == before and not diagnosed:
-            # 0 listings found on this page - show what's actually there
-            # instead of guessing at the format again. Only once per
-            # category run (not per district) to keep the log readable.
-            diagnosed = True
-            marker_count = html.count("Ảnh đại diện")
-            if marker_count == 0:
-                print(f"  [{label}/{slug}] listings diagnostic: 'Ảnh đại diện' does not appear anywhere in the {len(html)}-byte response - the card format has likely changed. First 500 chars: {html[:500]!r}", file=sys.stderr)
-            else:
-                idx = html.find("Ảnh đại diện")
-                print(f"  [{label}/{slug}] listings diagnostic: 'Ảnh đại diện' appears {marker_count}x but the card regex still didn't match. Snippet around first occurrence: {html[max(0,idx-50):idx+500]!r}", file=sys.stderr)
-        text = norm(" ".join(_flatten_to_lines(html)))
-        m = BDS_RANGE_RE.search(text) or BDS_RANGE_SHARED_UNIT_RE.search(text)
-        if not m:
-            print(f"  [{label}/{slug}] no price range found in response - skipping this district.", file=sys.stderr)
-            continue
-        rows.append({"area": name, "low": m.group(1), "high": m.group(2)})
+    max_workers = int(os.environ.get("MAX_CONCURRENT_FETCHES", "4"))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(_fetch_one_district, url_prefix, label, name, slug)
+            for name, slug in DISTRICT_SLUGS
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            row, listings = future.result()
+            SAMPLE_LISTINGS.extend(listings)
+            if row:
+                rows.append(row)
     return rows
 
 
