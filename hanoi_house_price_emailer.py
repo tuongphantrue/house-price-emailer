@@ -589,6 +589,14 @@ LISTING_CANDIDATES_PER_DISTRICT = int(os.environ.get("LISTING_CANDIDATES_PER_DIS
 _max_price_env = os.environ.get("LISTING_MAX_PRICE_TY", "2")
 LISTING_MAX_PRICE_TY = float(_max_price_env) if _max_price_env.strip() else None
 
+# Only show sample listings whose category contains this text (matched
+# against the "category" field, e.g. "Batdongsan.com.vn - Chung cư").
+# Defaults to apartments only. Empty string disables the filter (show
+# every property type found). This only affects which sample listings
+# are shown - the price-range tables for every category are unaffected,
+# since those come from a separate part of the pipeline.
+LISTING_CATEGORY_FILTER = os.environ.get("LISTING_CATEGORY_FILTER", "Chung cư")
+
 
 def listing_price_to_ty(price_str, area_m2_str=None):
     """Convert a listing's price string ('15 tỷ', '6,4 tỷ', '1.250 tỷ',
@@ -738,7 +746,11 @@ def render_sample_listings_html(listings):
         for l in listings
     )
     title = "Nhà mẫu tham khảo"
+    if LISTING_CATEGORY_FILTER:
+        title = f"Căn hộ mẫu tham khảo" if LISTING_CATEGORY_FILTER == "Chung cư" else f"{title} ({LISTING_CATEGORY_FILTER})"
     subtitle = "Một vài tin đăng thực tế lấy từ Batdongsan.com.vn, chỉ mang tính minh họa - không phải danh sách đầy đủ hay gợi ý mua."
+    if LISTING_CATEGORY_FILTER:
+        subtitle += f" Chỉ hiển thị loại hình '{LISTING_CATEGORY_FILTER}'."
     if LISTING_MAX_PRICE_TY is not None:
         title += f" (dưới {LISTING_MAX_PRICE_TY:g} tỷ)"
         subtitle += f" Chỉ hiển thị tin có giá ≤ {LISTING_MAX_PRICE_TY:g} tỷ - tin ghi 'giá thỏa thuận' (không có số) không được tính vào đây."
@@ -749,6 +761,8 @@ def render_sample_listings_text(listings):
     if not listings:
         return ""
     header = "== NHA MAU THAM KHAO"
+    if LISTING_CATEGORY_FILTER:
+        header += f" ({LISTING_CATEGORY_FILTER})"
     if LISTING_MAX_PRICE_TY is not None:
         header += f" (duoi {LISTING_MAX_PRICE_TY:g} ty)"
     header += " =="
@@ -1172,10 +1186,15 @@ def cmd_generate():
     print(f"Collected {len(SAMPLE_LISTINGS)} sample listing(s) as a by-product of the fetches above.")
 
     candidates = SAMPLE_LISTINGS
+    if LISTING_CATEGORY_FILTER:
+        before_category = len(candidates)
+        candidates = [l for l in candidates if LISTING_CATEGORY_FILTER in l["category"]]
+        print(f"Filtered to {len(candidates)}/{before_category} listing(s) matching category '{LISTING_CATEGORY_FILTER}'.")
+
     if LISTING_MAX_PRICE_TY is not None:
         priced = [(l, listing_price_to_ty(l["price"], l.get("area"))) for l in candidates]
         candidates = [l for l, ty in priced if ty is not None and ty <= LISTING_MAX_PRICE_TY]
-        print(f"Filtered to {len(candidates)}/{len(SAMPLE_LISTINGS)} listing(s) at or under {LISTING_MAX_PRICE_TY:g} tỷ (listings with an unparseable or negotiable price are excluded, not assumed to pass).")
+        print(f"Filtered to {len(candidates)}/{len(priced)} listing(s) at or under {LISTING_MAX_PRICE_TY:g} tỷ (listings with an unparseable or negotiable price are excluded, not assumed to pass).")
         if len(candidates) < 3 and priced:
             resolved = [ty for _, ty in priced if ty is not None]
             unresolved = sum(1 for _, ty in priced if ty is None)
