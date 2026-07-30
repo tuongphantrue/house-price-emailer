@@ -893,6 +893,12 @@ def fetch_nhatot():
 
 SOURCES = [
     {
+        "name": "Batdongsan.com.vn - Chung cư",
+        "fetch": lambda: fetch_batdongsan_category("ban-can-ho-chung-cu", "Batdongsan/ChungCu"),
+        "render_html": render_range_table,
+        "render_text": render_range_text,
+    },
+    {
         "name": "Mogi.vn - giá nhà đất bình quân (nhà + đất, gộp)",
         "fetch": fetch_mogi,
         "render_html": render_change_table,
@@ -901,12 +907,6 @@ SOURCES = [
     {
         "name": "Batdongsan.com.vn - Nhà mặt phố",
         "fetch": lambda: fetch_batdongsan_category("ban-nha-mat-pho", "Batdongsan/NhaMatPho"),
-        "render_html": render_range_table,
-        "render_text": render_range_text,
-    },
-    {
-        "name": "Batdongsan.com.vn - Chung cư",
-        "fetch": lambda: fetch_batdongsan_category("ban-can-ho-chung-cu", "Batdongsan/ChungCu"),
         "render_html": render_range_table,
         "render_text": render_range_text,
     },
@@ -1135,9 +1135,9 @@ def build_html(results, listings, timestamp):
   <div style="font-family:{F_BODY};font-size:12px;color:{C_HEADER_MUTED};">Cập nhật {escape(timestamp)}</div>
 </td></tr>
 {stat_strip}
+{listings_block}
 {sections}
 {typical_block}
-{listings_block}
 
 <tr><td style="padding:30px 36px 32px;">
   <div style="height:1px;background:{C_RULE};margin-bottom:16px;"></div>
@@ -1157,6 +1157,10 @@ def build_html(results, listings, timestamp):
 
 def build_plain_text(results, listings, timestamp):
     lines = [f"Gia nha dat Ha Noi theo quan/huyen - cap nhat {timestamp}", ""]
+    listings_text = render_sample_listings_text(listings)
+    if listings_text:
+        lines.append(listings_text)
+        lines.append("")
     if not results:
         lines.append("No source returned data this run. Check the workflow logs.")
     else:
@@ -1167,10 +1171,6 @@ def build_plain_text(results, listings, timestamp):
         typical_text = render_typical_price_text(compute_typical_prices(results))
         if typical_text:
             lines.append(typical_text)
-            lines.append("")
-        listings_text = render_sample_listings_text(listings)
-        if listings_text:
-            lines.append(listings_text)
     return "\n".join(lines)
 
 
