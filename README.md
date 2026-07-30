@@ -122,6 +122,12 @@ with real, individual property listings - title, total price, area, a
 photo, and a link - pulled from the same Batdongsan.com.vn pages already
 being fetched for the price-range tables above.
 
+**Order**: Chung cư fetches first (moved to the front of `SOURCES`) and
+the sample-listings section displays first in the email too, right
+after the stat strip and before every price table - both changed since
+the apartment listings are the thing this section is actually about
+now that it's filtered to apartments only.
+
 **Category filter**: sample listings default to apartments (Chung cư)
 only, via `LISTING_CATEGORY_FILTER` (default `Chung cư`, matched as a
 substring against the listing's category). Set it to empty to show
