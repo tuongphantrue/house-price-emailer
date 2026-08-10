@@ -392,16 +392,11 @@ def build_html(blended_rows, apartment_rows, apartment_avg, source_url, timestam
     sections = []
 
     if apartment_rows and not SKIP_APARTMENT_SECTION:
-        avg_str = f"{apartment_avg:.1f}".rstrip("0").rstrip(".") if apartment_avg is not None else "—"
         sections.append(f"""
-<h2 style="color:#1a5fb4;font-size:18px;margin-top:28px;">Giá căn hộ (chung cư) trung bình toàn Hà Nội</h2>
-<p style="font-size:22px;font-weight:bold;color:#1a5fb4;margin:4px 0 12px;">{escape(avg_str)} triệu đồng/m²</p>
+<h2 style="color:#1a5fb4;font-size:18px;margin-top:28px;">Giá căn hộ theo quận/huyện</h2>
 <p style="color:#999;font-size:12px;margin-top:-8px;">
-Trung bình cộng đơn giản trên {len(apartment_rows)}/{len(HANOI_APARTMENT_AREAS)} quận/huyện lấy được dữ liệu kỳ này -
-không phải số liệu chính thức được công bố.
+Lấy được dữ liệu {len(apartment_rows)}/{len(HANOI_APARTMENT_AREAS)} quận/huyện kỳ này.
 </p>
-
-<h2 style="color:#1a5fb4;font-size:18px;margin-top:24px;">Giá căn hộ theo quận/huyện</h2>
 {build_price_table_html(apartment_rows)}
 """)
     elif not SKIP_APARTMENT_SECTION:
@@ -445,10 +440,7 @@ def build_plain_text(blended_rows, apartment_rows, apartment_avg, source_url, ti
     lines = [f"Gia nha dat & can ho Ha Noi theo quan/huyen - cap nhat {timestamp}", ""]
 
     if apartment_rows and not SKIP_APARTMENT_SECTION:
-        avg_str = f"{apartment_avg:.1f}".rstrip("0").rstrip(".") if apartment_avg is not None else "—"
-        lines.append(f"GIA CAN HO TRUNG BINH TOAN HA NOI: {avg_str} trieu dong/m2 (tren {len(apartment_rows)}/{len(HANOI_APARTMENT_AREAS)} quan/huyen)")
-        lines.append("")
-        lines.append("Gia can ho theo quan/huyen:")
+        lines.append(f"Gia can ho theo quan/huyen ({len(apartment_rows)}/{len(HANOI_APARTMENT_AREAS)} quan/huyen co du lieu ky nay):")
         for r in apartment_rows:
             change_str = f"{r['change']}%" if r["change"] else "—"
             lines.append(f"  {r['area']}: {r['price']} trieu/m2 ({change_str})")
