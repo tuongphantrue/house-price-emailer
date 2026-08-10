@@ -253,47 +253,39 @@ def _norm(s):
     return unicodedata.normalize("NFC", s)
 
 
+def _blended_area_re(area):
+    # Matches e.g. "Quận Cầu Giấy 214 triệu/m 2 4,9% ▲" or "Quận Ba Đình 207
+    # triệu/m 2 —". Real page text has a stray space between "m" and "2"
+    # (from how "m²" gets text-extracted), so \s* sits between them too -
+    # this bit us in production (0 rows parsed) until this was caught.
+    return re.compile(
+        re.escape(area) + r"\s+([\d][\d.,]*)\s*triệu\s*/\s*m\s*2\s*"
+        r"(?:—|([\d][\d.,]*)\s*%\s*(▲|▼)?)"
+    )
+
+
 def parse_hanoi_table(html):
     """
     Parse the Hanoi section of mogi.vn/gia-nha-dat into a list of
     {area, price, change} rows. This is the original BLENDED (house + land)
     table - see module docstring for why apartments aren't split out here.
 
-    The page isn't cleanly separated in the DOM in an obvious way we can
-    rely on long-term, so rather than depend on exact table/row structure,
-    this matches by *district name* (HANOI_AREAS) against the page's
-    flattened text, then looks at the text immediately following each
-    match for a "NN triệu/m2" price and an optional "N,N%" change figure.
+    Searches the page's flattened, whitespace-joined text directly for each
+    known district name (HANOI_AREAS) followed by its price/change figures,
+    rather than splitting into lines - line-splitting turned out to be
+    fragile because "m²" gets text-extracted as "m" and "2" with a space
+    (sometimes even a line break) between them.
     """
     soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text("\n")
-    lines = [_norm(l) for l in text.split("\n") if _norm(l)]
+    text = _norm(soup.get_text(" "))
 
-    areas_norm = {_norm(a): a for a in HANOI_AREAS}
     rows = []
-    seen = set()
-
-    for i, line in enumerate(lines):
-        area = areas_norm.get(line)
-        if not area or area in seen:
-            continue
-        if i + 1 >= len(lines):
-            continue
-        w = lines[i + 1]
-        m = PRICE_RE.search(w)
+    for area in HANOI_AREAS:
+        m = _blended_area_re(area).search(text)
         if not m:
             continue
-        price = m.group(1)
-        change = None
-        direction = None
-        pm = PERCENT_RE.search(w)
-        if pm:
-            change = pm.group(1)
-            direction = "up" if "▲" in w else ("down" if "▼" in w else None)
-        if direction is None and i + 2 < len(lines) and lines[i + 2] in ("▲", "▼"):
-            direction = "up" if lines[i + 2] == "▲" else "down"
-
-        seen.add(area)
+        price, change, arrow = m.groups()
+        direction = "up" if arrow == "▲" else ("down" if arrow == "▼" else None)
         rows.append({"area": area, "price": price, "change": change, "direction": direction})
 
     return rows
