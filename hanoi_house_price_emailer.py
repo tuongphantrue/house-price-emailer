@@ -287,6 +287,26 @@ def fetch_category_listings(category, base_url):
     return listings
 
 
+def _price_sort_key(l):
+    p = l["price_trieu"]
+    if isinstance(p, (int, float)):
+        return (0, p)
+    # unpriced ("Thỏa thuận" or unparsed) sorts after all priced listings
+    return (1, 0)
+
+
+def sort_listings_by_price(listings):
+    # sort within each category (cheapest first), keeping categories grouped
+    # in the same order as CATEGORIES
+    by_category = {cat: [] for cat, _ in CATEGORIES}
+    for l in listings:
+        by_category.setdefault(l["category"], []).append(l)
+    sorted_listings = []
+    for cat, _ in CATEGORIES:
+        sorted_listings.extend(sorted(by_category.get(cat, []), key=_price_sort_key))
+    return sorted_listings
+
+
 def fetch_all_listings():
     all_listings = []
     for category, base_url in CATEGORIES:
@@ -391,6 +411,7 @@ def cmd_generate():
     os.makedirs(EMAIL_DIR, exist_ok=True)
 
     listings = fetch_all_listings()
+    listings = sort_listings_by_price(listings)
     print(f"Total parsed: {len(listings)} listing(s).")
 
     priced = [l for l in listings if l["price_trieu"] is not None]
