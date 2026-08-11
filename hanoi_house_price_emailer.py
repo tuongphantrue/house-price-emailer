@@ -1,90 +1,74 @@
 #!/usr/bin/env python3
 """
-Hanoi House/Land/Apartment Prices (by district) -> Email
+Hanoi Apartment & House Listings -> Email
 (runs on GitHub Actions, no local computer needed)
 
-Same shape as the gold-price-emailer / 9gag-meme-emailer this is modeled on:
-fetches price data, then emails an HTML digest via Gmail SMTP. Runs in two
-phases so the workflow can persist dedup state *between* them (see the
-accompanying GitHub Actions workflow):
+Sends the EXACT asking price of individual apartment/house listings
+currently posted on Mogi.vn - not district averages. Runs in two phases
+so the workflow can persist dedup state *between* them:
 
     python hanoi_house_price_emailer.py generate
-        -> scrapes the price data, writes the composed email
+        -> scrapes listing pages, writes the composed email
            (subject/html/text) under ./email/, and updates the
-           "last sent price" state file
+           "last sent" state file
 
     python hanoi_house_price_emailer.py send
         -> reads ./email/* and sends it via Gmail SMTP
 
-SOURCES & AN IMPORTANT CAVEAT
-------------------------------
-Vietnamese gold prices have a clean daily aggregator (giavang.org) with one
-simple table per seller. Housing prices don't have a real equivalent, and
-Mogi.vn's main "Giá nhà đất" table (https://mogi.vn/gia-nha-dat) only gives
-a BLENDED nha + dat (house + land) average per district - it does not split
-out apartments.
+SOURCE & SCOPE
+--------------
+  https://mogi.vn/ha-noi/mua-can-ho-chung-cu   (apartments for sale, Hanoi)
+  https://mogi.vn/ha-noi/mua-nha               (houses for sale, Hanoi)
 
-HOWEVER: each district's own Mogi page (e.g.
-https://mogi.vn/gia-nha-dat-quan-cau-giay-qd290) contains server-rendered
-prose that DOES break the average down by property type, including a
-sentence like:
+Both are large, paginated lists (Hanoi apartments alone run ~7,300+
+listings, 15/page) sorted newest-first. Pulling literally "all of them"
+every run means hundreds of pages and tens of thousands of rows - not
+realistic for a single email or for staying polite to the site. Instead
+this fetches the newest MAX_PAGES_PER_CATEGORY pages of each category
+(default 10 pages = up to ~150 listings per category, ~300 total) with a
+delay between page requests. Raise MAX_PAGES_PER_CATEGORY if you want more.
 
-    "Gia can ho tang 5,5%, len gan 35 trieu dong/m2."
-
-That sentence is what this script now parses per district (see
-CANHO_PRICE_RE / fetch_apartment_prices below) to build an apartment-only
-table. It is still a best-effort scrape of prose text, not a structured
-API, so:
-  - it is heuristic and can miss a district if Mogi rephrases the sentence
-  - the "city-wide average" this script emails is a simple mean of whatever
-    per-district figures were successfully parsed, not an official
-    aggregate figure
-  - the original blended nha-dat table is kept in the email too (clearly
-    labeled) since it's the most robust of the three numbers
-
-If you find a cleaner, structured, officially-published apartment-only
-source, that's a better fit than this regex-on-prose approach - swap it in
-where noted below.
-
-Because prices move slowly, running this every 30 minutes will very often
-just re-send the same numbers. Consider SEND_ONLY_ON_CHANGE=true (see
-below) if you'd rather only get an email when the numbers actually change.
+HOW LISTINGS ARE PARSED
+------------------------
+Rather than depending on exact CSS classes/DOM structure (which broke
+things once already in this project - see git history), each listing is
+found by its URL, which always ends in "-idNNNNNNN" - that ID is stable
+regardless of how the surrounding markup changes. The raw HTML is sliced
+between consecutive listing IDs, and each slice is parsed for title,
+district, area (m2), bedrooms/bathrooms, and price. If Mogi changes the
+page structure enough that the ID pattern itself changes, or moves *where*
+the price/area text sits in a way that breaks the regexes below, this
+will simply report a lower match count (see the min-parsed-ratio warning
+in cmd_generate) rather than emailing garbage.
 
 SETUP
 -----
 1. Install dependencies:
      pip install requests beautifulsoup4 certifi
 
-2. Create a Gmail "App Password" (regular Gmail passwords won't work with SMTP):
-     - Go to https://myaccount.google.com/apppasswords
-     - You need 2-Step Verification turned on first.
-     - Create an app password for "Mail" and copy the 16-character code.
+2. Create a Gmail "App Password":
+     - https://myaccount.google.com/apppasswords (needs 2-Step Verification on)
 
-3. Set these as environment variables (see README.md for GitHub Actions
-   secrets instead, if running in the cloud):
+3. Environment variables:
      export GMAIL_ADDRESS="youraddress@gmail.com"
      export GMAIL_APP_PASSWORD="16-char-app-password"
      export HOUSE_RECIPIENT="where-to-send@example.com"
-     export SEND_ONLY_ON_CHANGE="false"       # optional, default false
-     export TIMEZONE="Asia/Ho_Chi_Minh"       # optional, for the subject line
-     export SOURCE_URL="https://mogi.vn/gia-nha-dat"  # optional, blended table
-     export STATE_FILE="state/last_price.json"        # optional, dedup state file
-     export ALLOW_INSECURE_SSL_FALLBACK="false"        # optional, last-resort TLS bypass
-     export APARTMENT_REQUEST_DELAY="1.0"     # optional, seconds between the
-                                               # ~27 per-district page fetches
-     export SKIP_APARTMENT_SECTION="false"    # optional, set true to fall back
-                                               # to the old blended-only email
+     export SEND_ONLY_ON_CHANGE="false"        # optional, default false
+     export TIMEZONE="Asia/Ho_Chi_Minh"        # optional, for the subject line
+     export STATE_FILE="state/last_price.json" # optional, dedup state file
+     export ALLOW_INSECURE_SSL_FALLBACK="false"
+     export MAX_PAGES_PER_CATEGORY="10"        # optional, ~15 listings/page
+     export PAGE_REQUEST_DELAY="1.0"           # optional, seconds between page fetches
+     export APARTMENT_URL="https://mogi.vn/ha-noi/mua-can-ho-chung-cu"
+     export HOUSE_URL="https://mogi.vn/ha-noi/mua-nha"
 
 NOTE ON SCRAPING
 -----------------
-Always worth checking the current robots.txt / terms of whatever site this
-is pointed at before running it unattended long-term, e.g.:
-    https://mogi.vn/robots.txt
-
-The page markup (and the apartment sentence wording) can change at any
-time. If `generate` reports 0 blended rows, or 0/few apartment rows, open
-SOURCE_URL (and a couple of the per-district URLs in HANOI_APARTMENT_AREAS)
-and update parse_hanoi_table() / CANHO_PRICE_RE below to match.
+Worth checking https://mogi.vn/robots.txt before running this unattended
+long-term. If `generate` reports a low parsed ratio, open one of the
+listing URLs above and check whether the "-idNNNN" URL pattern and the
+"X tỷ Y triệu" / "N m2" / "N PN" / "N WC" text tokens near each listing
+still look the way LISTING_HREF_RE / parse_listing_chunk expect below.
 """
 
 import hashlib
@@ -95,7 +79,6 @@ import smtplib
 import ssl
 import sys
 import time
-import unicodedata
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -109,7 +92,6 @@ from bs4 import BeautifulSoup
 if os.environ.get("ALLOW_INSECURE_SSL_FALLBACK", "false").lower() == "true":
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-SOURCE_URL = os.environ.get("SOURCE_URL", "https://mogi.vn/gia-nha-dat")
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -121,85 +103,31 @@ EMAIL_DIR = "email"
 STATE_FILE = os.environ.get("STATE_FILE", "state/last_price.json")
 SEND_ONLY_ON_CHANGE = os.environ.get("SEND_ONLY_ON_CHANGE", "false").lower() == "true"
 ALLOW_INSECURE_SSL_FALLBACK = os.environ.get("ALLOW_INSECURE_SSL_FALLBACK", "false").lower() == "true"
-APARTMENT_REQUEST_DELAY = float(os.environ.get("APARTMENT_REQUEST_DELAY", "1.0"))
-SKIP_APARTMENT_SECTION = os.environ.get("SKIP_APARTMENT_SECTION", "false").lower() == "true"
+MAX_PAGES_PER_CATEGORY = int(os.environ.get("MAX_PAGES_PER_CATEGORY", "10"))
+PAGE_REQUEST_DELAY = float(os.environ.get("PAGE_REQUEST_DELAY", "1.0"))
 
-# Every district/huyen of Hanoi, as labeled on mogi.vn (prefix + name).
-# Matched against link text, so this list is what determines which rows on
-# the blended gia-nha-dat page belong to Hanoi (the same page also lists
-# TPHCM districts).
-HANOI_AREAS = [
-    "Quận Ba Đình", "Quận Cầu Giấy", "Quận Đống Đa", "Quận Hai Bà Trưng",
-    "Quận Hoàn Kiếm", "Quận Hoàng Mai", "Quận Long Biên", "Quận Tây Hồ",
-    "Quận Thanh Xuân", "Quận Hà Đông", "Quận Bắc Từ Liêm", "Quận Nam Từ Liêm",
-    "Huyện Mê Linh", "Huyện Ba Vì", "Huyện Chương Mỹ", "Huyện Đan Phượng",
-    "Huyện Hoài Đức", "Huyện Phúc Thọ", "Huyện Quốc Oai", "Huyện Thạch Thất",
-    "Huyện Thanh Oai", "Huyện Thường Tín", "Thị Xã Sơn Tây", "Huyện Đông Anh",
-    "Huyện Gia Lâm", "Huyện Sóc Sơn", "Huyện Thanh Trì", "Huyện Mỹ Đức",
-    "Huyện Phú Xuyên", "Huyện Ứng Hòa",
+CATEGORIES = [
+    ("Căn hộ / Chung cư", os.environ.get("APARTMENT_URL", "https://mogi.vn/ha-noi/mua-can-ho-chung-cu")),
+    ("Nhà", os.environ.get("HOUSE_URL", "https://mogi.vn/ha-noi/mua-nha")),
 ]
 
-PRICE_RE = re.compile(r"([\d][\d.,]*)\s*triệu\s*/\s*m2", re.IGNORECASE)
-PERCENT_RE = re.compile(r"([\d][\d.,]*)\s*%")
+# Every listing's detail-page URL ends in -idNNNNNNN - that ID is used both
+# to find where each listing "starts" in the raw HTML (slicing between
+# consecutive matches) and to dedupe/hash listings run-to-run.
+LISTING_HREF_RE = re.compile(r'href="([^"]*-id(\d+)/?)"')
+AREA_RE = re.compile(r"([\d][\d.,]*)\s*m2")
+PN_RE = re.compile(r"(\d+)\s*PN")
+WC_RE = re.compile(r"(\d+)\s*WC")
+DISTRICT_RE = re.compile(r"((?:Quận|Huyện|Thị Xã)(?:\s+\S+){1,3}),\s*Hà Nội")
+TY_TRIEU_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*tỷ(?:\s*(\d+(?:[.,]\d+)?)\s*triệu)?")
+TRIEU_ONLY_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*triệu")
 
-# Each Hanoi district's OWN mogi.vn page, which (unlike the blended table)
-# has a per-property-type breakdown in prose, including apartments. URLs
-# copied directly from the district links on https://mogi.vn/gia-nha-dat
-# as of Aug 2026 - Hanoi's district list changed after the 2025 admin
-# merger, so this may need occasional updates independent of HANOI_AREAS
-# above (which still reflects the older/blended table's area list).
-HANOI_APARTMENT_AREAS = [
-    ("Quận Ba Đình", "https://mogi.vn/gia-nha-dat-quan-ba-dinh-qd289"),
-    ("Quận Cầu Giấy", "https://mogi.vn/gia-nha-dat-quan-cau-giay-qd290"),
-    ("Quận Đống Đa", "https://mogi.vn/gia-nha-dat-quan-dong-da-qd291"),
-    ("Quận Hai Bà Trưng", "https://mogi.vn/gia-nha-dat-quan-hai-ba-trung-qd292"),
-    ("Quận Hoàn Kiếm", "https://mogi.vn/gia-nha-dat-quan-hoan-kiem-qd293"),
-    ("Quận Hoàng Mai", "https://mogi.vn/gia-nha-dat-quan-hoang-mai-qd294"),
-    ("Quận Long Biên", "https://mogi.vn/gia-nha-dat-quan-long-bien-qd295"),
-    ("Quận Tây Hồ", "https://mogi.vn/gia-nha-dat-quan-tay-ho-qd296"),
-    ("Quận Thanh Xuân", "https://mogi.vn/gia-nha-dat-quan-thanh-xuan-qd297"),
-    ("Quận Hà Đông", "https://mogi.vn/gia-nha-dat-quan-ha-dong-qd745"),
-    ("Quận Bắc Từ Liêm", "https://mogi.vn/gia-nha-dat-quan-bac-tu-liem-qd754"),
-    ("Quận Nam Từ Liêm", "https://mogi.vn/gia-nha-dat-quan-nam-tu-liem-qd755"),
-    ("Huyện Mê Linh", "https://mogi.vn/gia-nha-dat-huyen-me-linh-qd729"),
-    ("Huyện Ba Vì", "https://mogi.vn/gia-nha-dat-huyen-ba-vi-qd298"),
-    ("Huyện Chương Mỹ", "https://mogi.vn/gia-nha-dat-huyen-chuong-my-qd299"),
-    ("Huyện Đan Phượng", "https://mogi.vn/gia-nha-dat-huyen-dan-phuong-qd300"),
-    ("Huyện Hoài Đức", "https://mogi.vn/gia-nha-dat-huyen-hoai-duc-qd301"),
-    ("Huyện Phúc Thọ", "https://mogi.vn/gia-nha-dat-huyen-phuc-tho-qd304"),
-    ("Huyện Quốc Oai", "https://mogi.vn/gia-nha-dat-huyen-quoc-oai-qd305"),
-    ("Huyện Thạch Thất", "https://mogi.vn/gia-nha-dat-huyen-thach-that-qd306"),
-    ("Huyện Thanh Oai", "https://mogi.vn/gia-nha-dat-huyen-thanh-oai-qd307"),
-    ("Huyện Thường Tín", "https://mogi.vn/gia-nha-dat-huyen-thuong-tin-qd308"),
-    ("Thị Xã Sơn Tây", "https://mogi.vn/gia-nha-dat-thi-xa-son-tay-qd311"),
-    ("Huyện Đông Anh", "https://mogi.vn/gia-nha-dat-huyen-dong-anh-qd284"),
-    ("Huyện Gia Lâm", "https://mogi.vn/gia-nha-dat-huyen-gia-lam-qd285"),
-    ("Huyện Sóc Sơn", "https://mogi.vn/gia-nha-dat-huyen-soc-son-qd286"),
-    ("Huyện Thanh Trì", "https://mogi.vn/gia-nha-dat-huyen-thanh-tri-ha-noi-qd287"),
-]
-
-# Matches sentences like:
-#   "Giá căn hộ tăng 5,5%, lên gần 35 triệu đồng/m2."
-#   "Giá căn hộ giảm 9,7%, xuống còn trên 130 triệu đồng/m2."
-#   "Giá căn hộ không đổi, giữ mức 50 triệu đồng/m2."
-# Group 1: direction word ("tăng" / "giảm" / "không đổi")
-# Group 2: percent change (may be empty, e.g. for "không đổi")
-# Group 3: price in triệu đồng/m2
-CANHO_PRICE_RE = re.compile(
-    r"Giá\s+căn\s+hộ\s+"
-    r"(tăng|giảm|không đổi)"
-    r"(?:\s*(?:nhẹ|mạnh))?"
-    r"\s*([\d.,]+)?%?,?"
-    r"\s*(?:lên|xuống|giữ mức)?\s*(?:còn)?\s*(?:trên|gần|dưới)?\s*"
-    r"([\d.,]+)\s*triệu(?:\s*đồng)?\s*/\s*m2",
-    re.IGNORECASE,
-)
+# Max chunk size (chars of raw HTML) to look at per listing, in case two
+# consecutive listing IDs are unexpectedly far apart in the markup.
+MAX_CHUNK_CHARS = 4000
 
 
 def load_last_hash(path=STATE_FILE):
-    """Return the previous run's price-data hash, or None if there isn't
-    one (missing/corrupt state is treated as "first run", not fatal).
-    """
     if not os.path.exists(path):
         return None
     try:
@@ -222,10 +150,6 @@ def hash_data(data):
 
 
 def fetch_page(url):
-    """GET a page, verifying TLS against certifi's CA bundle explicitly
-    (see gold-price-emailer's fetch_page for why). ALLOW_INSECURE_SSL_FALLBACK
-    is an explicit opt-in last resort if that still fails.
-    """
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15, verify=certifi.where())
         resp.raise_for_status()
@@ -245,212 +169,208 @@ def fetch_page(url):
         return resp.text
 
 
-def _norm(s):
-    # Collapse NBSP/whitespace and normalize to NFC so diacritics compare
-    # equal regardless of which composed/decomposed form the page sends.
-    s = s.replace("\xa0", " ")
-    s = re.sub(r"\s+", " ", s).strip()
-    return unicodedata.normalize("NFC", s)
+def parse_price_trieu(text):
+    """Returns price in triệu đồng (float), the string 'Thỏa thuận' for
+    negotiable listings, or None if no price could be found at all."""
+    lower = text.lower()
+    if "thỏa thuận" in lower or "thoả thuận" in lower:
+        return "Thỏa thuận"
+    m = TY_TRIEU_RE.search(text)
+    if m:
+        ty = float(m.group(1).replace(",", "."))
+        trieu = float(m.group(2).replace(",", ".")) if m.group(2) else 0.0
+        return ty * 1000 + trieu
+    m2 = TRIEU_ONLY_RE.search(text)
+    if m2:
+        return float(m2.group(1).replace(",", "."))
+    return None
 
 
-def _blended_area_re(area):
-    # Matches e.g. "Quận Cầu Giấy 214 triệu/m 2 4,9% ▲" or "Quận Ba Đình 207
-    # triệu/m 2 —". Real page text has a stray space between "m" and "2"
-    # (from how "m²" gets text-extracted), so \s* sits between them too -
-    # this bit us in production (0 rows parsed) until this was caught.
-    return re.compile(
-        re.escape(area) + r"\s+([\d][\d.,]*)\s*triệu\s*/\s*m\s*2\s*"
-        r"(?:—|([\d][\d.,]*)\s*%\s*(▲|▼)?)"
-    )
+def format_price(price_trieu):
+    if price_trieu is None:
+        return "—"
+    if isinstance(price_trieu, str):
+        return price_trieu
+    if price_trieu >= 1000:
+        ty = int(price_trieu // 1000)
+        trieu = price_trieu - ty * 1000
+        return f"{ty} tỷ {trieu:.0f} triệu" if trieu else f"{ty} tỷ"
+    return f"{price_trieu:.0f} triệu"
 
 
-def parse_hanoi_table(html):
+def split_listing_chunks(html):
+    """Slice the raw page HTML into one chunk per listing, using each
+    listing's -idNNNN URL as the boundary (dedupes the image-link +
+    title-link pair that both point at the same listing).
     """
-    Parse the Hanoi section of mogi.vn/gia-nha-dat into a list of
-    {area, price, change} rows. This is the original BLENDED (house + land)
-    table - see module docstring for why apartments aren't split out here.
+    matches = list(LISTING_HREF_RE.finditer(html))
+    seen = {}
+    order = []
+    for m in matches:
+        href, listing_id = m.group(1), m.group(2)
+        if listing_id not in seen:
+            seen[listing_id] = m.start()
+            order.append((listing_id, href, m.start()))
 
-    Searches the page's flattened, whitespace-joined text directly for each
-    known district name (HANOI_AREAS) followed by its price/change figures,
-    rather than splitting into lines - line-splitting turned out to be
-    fragile because "m²" gets text-extracted as "m" and "2" with a space
-    (sometimes even a line break) between them.
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    text = _norm(soup.get_text(" "))
-
-    rows = []
-    for area in HANOI_AREAS:
-        m = _blended_area_re(area).search(text)
-        if not m:
-            continue
-        price, change, arrow = m.groups()
-        direction = "up" if arrow == "▲" else ("down" if arrow == "▼" else None)
-        rows.append({"area": area, "price": price, "change": change, "direction": direction})
-
-    return rows
+    chunks = []
+    for i, (lid, href, start) in enumerate(order):
+        next_start = order[i + 1][2] if i + 1 < len(order) else len(html)
+        end = min(next_start, start + MAX_CHUNK_CHARS)
+        chunks.append((lid, href, html[start:end]))
+    return chunks
 
 
-def fetch_hanoi_prices():
-    html = fetch_page(SOURCE_URL)
-    return parse_hanoi_table(html)
+def parse_listing_chunk(lid, href, chunk_html, category):
+    soup = BeautifulSoup(chunk_html, "html.parser")
+    text = re.sub(r"\s+", " ", soup.get_text(" ")).strip()
+
+    title_tag = soup.find("a")
+    title = title_tag.get_text(" ", strip=True) if title_tag else None
+    # image alt text is often the real title when the <a> wraps only an <img>
+    if (not title or len(title) < 3) and soup.find("img", alt=True):
+        title = soup.find("img", alt=True)["alt"]
+
+    area_m = AREA_RE.search(text)
+    pn_m = PN_RE.search(text)
+    wc_m = WC_RE.search(text)
+    district_m = DISTRICT_RE.search(text)
+    price = parse_price_trieu(text)
+
+    url = href if href.startswith("http") else f"https://mogi.vn{href}"
+
+    return {
+        "id": lid,
+        "category": category,
+        "title": title or "(không có tiêu đề)",
+        "url": url,
+        "district": district_m.group(1).strip() if district_m else None,
+        "area": area_m.group(1) if area_m else None,
+        "bedrooms": pn_m.group(1) if pn_m else None,
+        "bathrooms": wc_m.group(1) if wc_m else None,
+        "price_trieu": price,
+    }
 
 
-def parse_apartment_price(html):
-    """Parse a single district page's prose for the 'Giá căn hộ ...'
-    sentence. Returns {price, change, direction} or None if the sentence
-    wasn't found (page rephrased, or this district has no apartment
-    stock to report on).
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    text = _norm(soup.get_text(" "))
-    m = CANHO_PRICE_RE.search(text)
-    if not m:
-        return None
-    direction_word, change, price = m.groups()
-    direction = None
-    if direction_word == "tăng":
-        direction = "up"
-    elif direction_word == "giảm":
-        direction = "down"
-    return {"price": price, "change": change, "direction": direction}
-
-
-def _to_float(s):
-    if not s:
-        return None
-    try:
-        return float(s.replace(".", "").replace(",", "."))
-    except ValueError:
-        return None
-
-
-def fetch_apartment_prices():
-    """Fetch each Hanoi district's own page and parse its apartment-price
-    sentence. Politely delayed (APARTMENT_REQUEST_DELAY) between requests
-    since this is ~27 requests instead of the blended table's 1.
-    Failures on individual districts are logged and skipped, not fatal.
-    """
-    rows = []
-    for i, (area, url) in enumerate(HANOI_APARTMENT_AREAS):
-        if i > 0 and APARTMENT_REQUEST_DELAY > 0:
-            time.sleep(APARTMENT_REQUEST_DELAY)
+def fetch_category_listings(category, base_url):
+    listings = []
+    seen_ids = set()
+    for page in range(1, MAX_PAGES_PER_CATEGORY + 1):
+        url = base_url if page == 1 else f"{base_url}?cp={page}"
+        if page > 1 and PAGE_REQUEST_DELAY > 0:
+            time.sleep(PAGE_REQUEST_DELAY)
         try:
             html = fetch_page(url)
         except requests.RequestException as e:
-            print(f"  [apartment] failed to fetch {area} ({url}): {e}", file=sys.stderr)
-            continue
-        parsed = parse_apartment_price(html)
-        if not parsed:
-            print(f"  [apartment] could not find apartment sentence for {area} - skipping", file=sys.stderr)
-            continue
-        rows.append({"area": area, **parsed})
-    return rows
+            print(f"  [{category}] failed to fetch page {page} ({url}): {e}", file=sys.stderr)
+            break
+
+        chunks = split_listing_chunks(html)
+        if not chunks:
+            print(f"  [{category}] page {page}: 0 listing IDs found - stopping "
+                  f"(either last page or markup changed)", file=sys.stderr)
+            break
+
+        new_this_page = 0
+        for lid, href, chunk_html in chunks:
+            if lid in seen_ids:
+                continue
+            seen_ids.add(lid)
+            listings.append(parse_listing_chunk(lid, href, chunk_html, category))
+            new_this_page += 1
+
+        print(f"  [{category}] page {page}: {new_this_page} new listing(s) parsed "
+              f"(total so far: {len(listings)})")
+
+        if new_this_page == 0:
+            break
+
+    return listings
 
 
-def _change_html(change, direction):
-    if not change:
-        return "<span style='color:#999'>—</span>"
-    color = "#1a7f37" if direction == "up" else ("#cf222e" if direction == "down" else "#666")
-    arrow = "▲" if direction == "up" else ("▼" if direction == "down" else "")
-    return f"<span style='color:{color}'>{escape(change)}% {arrow}</span>"
+def fetch_all_listings():
+    all_listings = []
+    for category, base_url in CATEGORIES:
+        print(f"Fetching {category} ({base_url}) - up to {MAX_PAGES_PER_CATEGORY} page(s) ...")
+        all_listings.extend(fetch_category_listings(category, base_url))
+    return all_listings
 
 
-def build_price_table_html(rows, price_label="triệu/m²"):
-    row_html = "\n".join(
-        f"<tr>"
-        f"<td style='padding:6px 12px;border-bottom:1px solid #eee'><strong>{escape(r['area'])}</strong></td>"
-        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{escape(r['price'])} {price_label}</td>"
-        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>{_change_html(r['change'], r['direction'])}</td>"
-        f"</tr>"
-        for r in rows
-    )
+def build_listing_row_html(l):
+    price_str = escape(format_price(l["price_trieu"]))
+    details = []
+    if l["area"]:
+        details.append(f"{escape(l['area'])} m²")
+    if l["bedrooms"]:
+        details.append(f"{escape(l['bedrooms'])} PN")
+    if l["bathrooms"]:
+        details.append(f"{escape(l['bathrooms'])} WC")
+    detail_str = " · ".join(details) if details else "—"
+    district_str = escape(l["district"]) if l["district"] else "—"
+
     return f"""
-<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:600px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-<thead>
-<tr style="background:#f5f5f5;">
-<th style="padding:8px 12px;text-align:left;">Quận / Huyện</th>
-<th style="padding:8px 12px;text-align:right;">Giá trung bình</th>
-<th style="padding:8px 12px;text-align:right;">So với kỳ trước</th>
-</tr>
-</thead>
-<tbody>
-{row_html}
-</tbody>
-</table>"""
+<tr>
+<td style="padding:8px 12px;border-bottom:1px solid #eee;">
+  <a href="{escape(l['url'])}" style="color:#1a5fb4;text-decoration:none;font-weight:bold;">{escape(l['title'])}</a><br>
+  <span style="color:#666;font-size:12px;">{district_str} · {detail_str}</span>
+</td>
+<td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap;font-weight:bold;">{price_str}</td>
+</tr>"""
 
 
-def build_html(blended_rows, apartment_rows, apartment_avg, source_url, timestamp):
-    sections = []
-
-    if apartment_rows and not SKIP_APARTMENT_SECTION:
-        sections.append(f"""
-<h2 style="color:#1a5fb4;font-size:18px;margin-top:28px;">Giá căn hộ theo quận/huyện</h2>
-<p style="color:#999;font-size:12px;margin-top:-8px;">
-Lấy được dữ liệu {len(apartment_rows)}/{len(HANOI_APARTMENT_AREAS)} quận/huyện kỳ này.
-</p>
-{build_price_table_html(apartment_rows)}
-""")
-    elif not SKIP_APARTMENT_SECTION:
-        sections.append("""
-<h2 style="color:#1a5fb4;font-size:18px;margin-top:28px;">Giá căn hộ theo quận/huyện</h2>
-<p>Không lấy được câu "Giá căn hộ ..." từ bất kỳ trang quận/huyện nào kỳ này -
-có thể Mogi.vn đã đổi cách diễn đạt trên trang. Xem CANHO_PRICE_RE trong script.</p>
-""")
-
-    if blended_rows:
-        sections.append(f"""
-<h2 style="color:#1a5fb4;font-size:18px;margin-top:28px;">Giá nhà đất chung theo quận/huyện (nhà + đất, gộp)</h2>
-<p style="color:#999;font-size:12px;margin-top:-4px;">
-Đây KHÔNG phải giá căn hộ riêng - là giá bình quân gộp chung nhà và đất, giữ lại để tham khảo/so sánh.
-</p>
-{build_price_table_html(blended_rows)}
-""")
+def build_html(listings, timestamp):
+    if not listings:
+        body = "<p>Không lấy được tin đăng nào kỳ này. Kiểm tra trực tiếp nguồn hoặc xem log để biết chi tiết.</p>"
     else:
-        sections.append("""
-<h2 style="color:#1a5fb4;font-size:18px;margin-top:28px;">Giá nhà đất chung (nhà + đất, gộp)</h2>
-<p>Không lấy được bảng giá nhà đất chung kỳ này. Kiểm tra trực tiếp nguồn.</p>
-""")
-
-    body = "\n".join(sections)
+        sections = []
+        for category, _ in CATEGORIES:
+            cat_listings = [l for l in listings if l["category"] == category]
+            if not cat_listings:
+                continue
+            rows = "\n".join(build_listing_row_html(l) for l in cat_listings)
+            sections.append(f"""
+<h2 style="color:#1a5fb4;font-size:18px;margin-top:28px;">{escape(category)} ({len(cat_listings)} tin)</h2>
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:640px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
+<tbody>
+{rows}
+</tbody>
+</table>""")
+        body = "\n".join(sections)
 
     return f"""\
 <html>
 <body style="margin:0; padding:20px; background:#f4f4f4; font-family:Arial,Helvetica,sans-serif;">
-<h1 style="color:#1a5fb4;">Giá nhà đất & căn hộ Hà Nội theo quận/huyện</h1>
-<p style="color:#555;">Cập nhật {escape(timestamp)}</p>
+<h1 style="color:#1a5fb4;">Tin đăng bán nhà & căn hộ Hà Nội</h1>
+<p style="color:#555;">Cập nhật {escape(timestamp)} · {len(listings)} tin đăng</p>
 {body}
 <p style="color:#999; font-size:12px; margin-top:24px;">
-Nguồn: <a href="{escape(source_url)}">{escape(source_url)}</a> và từng trang quận/huyện tương ứng trên Mogi.vn ·
-Đơn vị: triệu đồng/m² · Email tự động, chỉ mang tính tham khảo, không phải lời khuyên đầu tư.
+Nguồn: từng tin đăng thực tế trên Mogi.vn (không phải giá trung bình) ·
+Email tự động, chỉ mang tính tham khảo, không phải lời khuyên đầu tư.
 </p>
 </body>
 </html>"""
 
 
-def build_plain_text(blended_rows, apartment_rows, apartment_avg, source_url, timestamp):
-    lines = [f"Gia nha dat & can ho Ha Noi theo quan/huyen - cap nhat {timestamp}", ""]
-
-    if apartment_rows and not SKIP_APARTMENT_SECTION:
-        lines.append(f"Gia can ho theo quan/huyen ({len(apartment_rows)}/{len(HANOI_APARTMENT_AREAS)} quan/huyen co du lieu ky nay):")
-        for r in apartment_rows:
-            change_str = f"{r['change']}%" if r["change"] else "—"
-            lines.append(f"  {r['area']}: {r['price']} trieu/m2 ({change_str})")
+def build_plain_text(listings, timestamp):
+    lines = [f"Tin dang ban nha & can ho Ha Noi - cap nhat {timestamp}", f"{len(listings)} tin dang", ""]
+    for category, _ in CATEGORIES:
+        cat_listings = [l for l in listings if l["category"] == category]
+        if not cat_listings:
+            continue
+        lines.append(f"=== {category} ({len(cat_listings)} tin) ===")
+        for l in cat_listings:
+            details = []
+            if l["area"]:
+                details.append(f"{l['area']} m2")
+            if l["bedrooms"]:
+                details.append(f"{l['bedrooms']} PN")
+            if l["bathrooms"]:
+                details.append(f"{l['bathrooms']} WC")
+            detail_str = ", ".join(details) if details else "—"
+            district_str = l["district"] or "—"
+            lines.append(f"  {l['title']}")
+            lines.append(f"    {district_str} | {detail_str} | {format_price(l['price_trieu'])}")
+            lines.append(f"    {l['url']}")
         lines.append("")
-    elif not SKIP_APARTMENT_SECTION:
-        lines.append("Khong lay duoc gia can ho ky nay.")
-        lines.append("")
-
-    lines.append("Gia nha dat chung (nha + dat, gop) - KHONG phai gia can ho rieng:")
-    if not blended_rows:
-        lines.append("  Khong lay duoc bang gia nha dat chung ky nay.")
-    else:
-        for r in blended_rows:
-            change_str = f"{r['change']}%" if r["change"] else "—"
-            lines.append(f"  {r['area']}: {r['price']} trieu/m2 ({change_str})")
-
-    lines.append("")
-    lines.append(f"Nguon: {source_url}")
     return "\n".join(lines)
 
 
@@ -470,46 +390,31 @@ def cmd_generate():
             os.remove(os.path.join(EMAIL_DIR, f))
     os.makedirs(EMAIL_DIR, exist_ok=True)
 
-    print(f"Fetching blended table {SOURCE_URL} ...")
-    try:
-        blended_rows = fetch_hanoi_prices()
-    except requests.RequestException as e:
-        print(f"Failed to fetch blended price page: {e}", file=sys.stderr)
-        blended_rows = []
-    print(f"Parsed {len(blended_rows)} blended Hanoi district row(s).")
+    listings = fetch_all_listings()
+    print(f"Total parsed: {len(listings)} listing(s).")
 
-    apartment_rows = []
-    if not SKIP_APARTMENT_SECTION:
-        print(f"Fetching apartment prices for {len(HANOI_APARTMENT_AREAS)} district page(s) "
-              f"(delay={APARTMENT_REQUEST_DELAY}s) ...")
-        apartment_rows = fetch_apartment_prices()
-        print(f"Parsed {len(apartment_rows)}/{len(HANOI_APARTMENT_AREAS)} apartment row(s).")
-
-    if not blended_rows and not apartment_rows:
+    priced = [l for l in listings if l["price_trieu"] is not None]
+    if listings and len(priced) / len(listings) < 0.5:
         print(
-            "  0 rows parsed from either source - markup may have changed. "
-            "Check SOURCE_URL and a sample district URL in HANOI_APARTMENT_AREAS.",
+            f"  WARNING: only {len(priced)}/{len(listings)} listings had a parseable price - "
+            "Mogi may have changed its price text format. Check parse_price_trieu().",
             file=sys.stderr,
         )
 
-    apartment_prices_f = [_to_float(r["price"]) for r in apartment_rows]
-    apartment_prices_f = [p for p in apartment_prices_f if p is not None]
-    apartment_avg = sum(apartment_prices_f) / len(apartment_prices_f) if apartment_prices_f else None
-
-    combined_for_hash = {"blended": blended_rows, "apartment": apartment_rows}
-    price_hash = hash_data(combined_for_hash)
+    hash_input = [{"id": l["id"], "price_trieu": l["price_trieu"]} for l in listings]
+    price_hash = hash_data(hash_input)
     last_hash = load_last_hash()
 
-    if (blended_rows or apartment_rows) and SEND_ONLY_ON_CHANGE and price_hash == last_hash:
-        print("Prices unchanged since last run and SEND_ONLY_ON_CHANGE=true - skipping email.")
+    if listings and SEND_ONLY_ON_CHANGE and price_hash == last_hash:
+        print("Listings unchanged since last run and SEND_ONLY_ON_CHANGE=true - skipping email.")
         with open(os.path.join(EMAIL_DIR, "meta.json"), "w") as f:
             json.dump({"send": False}, f)
         return
 
     now, timestamp = resolve_timestamp()
-    subject = f"Gia nha dat & can ho Ha Noi - {now.strftime('%d/%m/%Y %H:%M')}"
-    html_body = build_html(blended_rows, apartment_rows, apartment_avg, SOURCE_URL, timestamp)
-    text_body = build_plain_text(blended_rows, apartment_rows, apartment_avg, SOURCE_URL, timestamp)
+    subject = f"Tin dang nha & can ho Ha Noi - {now.strftime('%d/%m/%Y %H:%M')} ({len(listings)} tin)"
+    html_body = build_html(listings, timestamp)
+    text_body = build_plain_text(listings, timestamp)
 
     with open(os.path.join(EMAIL_DIR, "subject.txt"), "w") as f:
         f.write(subject)
@@ -518,10 +423,10 @@ def cmd_generate():
     with open(os.path.join(EMAIL_DIR, "body.txt"), "w") as f:
         f.write(text_body)
     with open(os.path.join(EMAIL_DIR, "meta.json"), "w") as f:
-        json.dump({"send": True, "blended_rows": len(blended_rows), "apartment_rows": len(apartment_rows)}, f)
+        json.dump({"send": True, "listing_count": len(listings)}, f)
 
     save_last_hash(price_hash)
-    print(f"Generated email (blended={len(blended_rows)}, apartment={len(apartment_rows)}). Saved to ./{EMAIL_DIR}/")
+    print(f"Generated email ({len(listings)} listings). Saved to ./{EMAIL_DIR}/")
 
 
 def cmd_send():
@@ -545,7 +450,7 @@ def cmd_send():
     with open(meta_path) as f:
         meta = json.load(f)
     if not meta.get("send", False):
-        print("Nothing to send this run (unchanged prices, or generate found no rows).")
+        print("Nothing to send this run (unchanged listings, or generate found none).")
         return
 
     with open(os.path.join(EMAIL_DIR, "subject.txt")) as f:
