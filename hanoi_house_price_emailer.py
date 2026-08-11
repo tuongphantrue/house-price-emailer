@@ -105,6 +105,14 @@ SEND_ONLY_ON_CHANGE = os.environ.get("SEND_ONLY_ON_CHANGE", "false").lower() == 
 ALLOW_INSECURE_SSL_FALLBACK = os.environ.get("ALLOW_INSECURE_SSL_FALLBACK", "false").lower() == "true"
 MAX_PAGES_PER_CATEGORY = int(os.environ.get("MAX_PAGES_PER_CATEGORY", "10"))
 PAGE_REQUEST_DELAY = float(os.environ.get("PAGE_REQUEST_DELAY", "1.0"))
+# Real Hanoi apartments/houses for SALE are never priced this low in triệu
+# đồng - a listing showing e.g. "12 triệu" (~$460) for a 95m2 apartment is
+# almost always a seller data-entry error on Mogi itself (typed "triệu"
+# meaning "tỷ", or a leftover placeholder), not a scraping bug - confirmed
+# by spot-checking the live page directly. Filtered out rather than shown
+# as fact. Lower this if you genuinely want to see sub-threshold listings
+# (e.g. very small/rural huyện listings can legitimately be cheaper).
+MIN_PLAUSIBLE_PRICE_TRIEU = float(os.environ.get("MIN_PLAUSIBLE_PRICE_TRIEU", "300"))
 
 CATEGORIES = [
     ("Căn hộ / Chung cư", os.environ.get("APARTMENT_URL", "https://mogi.vn/ha-noi/mua-can-ho-chung-cu")),
@@ -411,6 +419,21 @@ def cmd_generate():
     os.makedirs(EMAIL_DIR, exist_ok=True)
 
     listings = fetch_all_listings()
+
+    implausible = [
+        l for l in listings
+        if isinstance(l["price_trieu"], (int, float)) and l["price_trieu"] < MIN_PLAUSIBLE_PRICE_TRIEU
+    ]
+    if implausible:
+        print(f"  Dropping {len(implausible)} listing(s) with implausible price "
+              f"(< {MIN_PLAUSIBLE_PRICE_TRIEU} triệu - likely seller data-entry error, "
+              f"not a real sale price):", file=sys.stderr)
+        for l in implausible[:10]:
+            print(f"    [{l['category']}] {format_price(l['price_trieu'])} - {l['title'][:60]}", file=sys.stderr)
+        if len(implausible) > 10:
+            print(f"    ... and {len(implausible) - 10} more", file=sys.stderr)
+    listings = [l for l in listings if l not in implausible]
+
     listings = sort_listings_by_price(listings)
     print(f"Total parsed: {len(listings)} listing(s).")
 
