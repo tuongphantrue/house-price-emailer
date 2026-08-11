@@ -79,7 +79,7 @@ import smtplib
 import ssl
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html import escape
@@ -130,6 +130,19 @@ DISTRICT_RE = re.compile(r"((?:Quận|Huyện|Thị Xã)(?:\s+\S+){1,3}),\s*Hà 
 TY_TRIEU_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*tỷ(?:\s*(\d+(?:[.,]\d+)?)\s*triệu)?")
 TRIEU_ONLY_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*triệu")
 
+# Posting-date text seen on listing cards: "Hôm nay", "Hôm qua", "N ngày
+# trước", "N tuần trước", "N tháng trước", or an explicit "dd/mm/yyyy".
+# Listings without a matched date are treated as unknown age, not dropped.
+POSTED_RELATIVE_RE = re.compile(
+    r"\b(Hôm nay|Hôm qua|(\d+)\s*(ngày|tuần|tháng|năm)\s*trước)\b"
+)
+POSTED_EXPLICIT_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
+
+# Listings aren't shown if their post is older than this many days - an old
+# post's asking price may no longer reflect the current market (or the unit
+# may already be sold). Set to 0 to disable age filtering entirely.
+MAX_LISTING_AGE_DAYS = int(os.environ.get("MAX_LISTING_AGE_DAYS", "90"))
+
 # Max chunk size (chars of raw HTML) to look at per listing, in case two
 # consecutive listing IDs are unexpectedly far apart in the markup.
 MAX_CHUNK_CHARS = 4000
@@ -175,6 +188,39 @@ def fetch_page(url):
         resp = requests.get(url, headers=HEADERS, timeout=15, verify=False)
         resp.raise_for_status()
         return resp.text
+
+
+def parse_posted_date(text, today=None):
+    """Returns (label, date) for a listing's posting date, or (None, None)
+    if no recognizable date text was found. `today` should be a date
+    object (defaults to the real current date) - passed explicitly so this
+    stays testable/deterministic.
+    """
+    if today is None:
+        today = datetime.now().date()
+
+    m = POSTED_RELATIVE_RE.search(text)
+    if m:
+        label = m.group(1)
+        if label == "Hôm nay":
+            return "Hôm nay", today
+        if label == "Hôm qua":
+            return "Hôm qua", today - timedelta(days=1)
+        n, unit = m.group(2), m.group(3)
+        n = int(n)
+        days = {"ngày": 1, "tuần": 7, "tháng": 30, "năm": 365}[unit]
+        return f"{n} {unit} trước", today - timedelta(days=n * days)
+
+    m2 = POSTED_EXPLICIT_DATE_RE.search(text)
+    if m2:
+        d, mo, y = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
+        try:
+            dt = date(y, mo, d)
+            return dt.strftime("%d/%m/%Y"), dt
+        except ValueError:
+            return None, None
+
+    return None, None
 
 
 def parse_price_trieu(text):
@@ -243,6 +289,7 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     wc_m = WC_RE.search(text)
     district_m = DISTRICT_RE.search(text)
     price = parse_price_trieu(text)
+    posted_label, posted_date = parse_posted_date(text)
 
     url = href if href.startswith("http") else f"https://mogi.vn{href}"
 
@@ -256,6 +303,8 @@ def parse_listing_chunk(lid, href, chunk_html, category):
         "bedrooms": pn_m.group(1) if pn_m else None,
         "bathrooms": wc_m.group(1) if wc_m else None,
         "price_trieu": price,
+        "posted_label": posted_label,
+        "posted_date": posted_date.isoformat() if posted_date else None,
     }
 
 
@@ -334,12 +383,13 @@ def build_listing_row_html(l):
         details.append(f"{escape(l['bathrooms'])} WC")
     detail_str = " · ".join(details) if details else "—"
     district_str = escape(l["district"]) if l["district"] else "—"
+    posted_str = escape(l["posted_label"]) if l["posted_label"] else "?"
 
     return f"""
 <tr>
 <td style="padding:8px 12px;border-bottom:1px solid #eee;">
   <a href="{escape(l['url'])}" style="color:#1a5fb4;text-decoration:none;font-weight:bold;">{escape(l['title'])}</a><br>
-  <span style="color:#666;font-size:12px;">{district_str} · {detail_str}</span>
+  <span style="color:#666;font-size:12px;">{district_str} · {detail_str} · đăng {posted_str}</span>
 </td>
 <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap;font-weight:bold;">{price_str}</td>
 </tr>"""
@@ -395,8 +445,9 @@ def build_plain_text(listings, timestamp):
                 details.append(f"{l['bathrooms']} WC")
             detail_str = ", ".join(details) if details else "—"
             district_str = l["district"] or "—"
+            posted_str = l["posted_label"] or "?"
             lines.append(f"  {l['title']}")
-            lines.append(f"    {district_str} | {detail_str} | {format_price(l['price_trieu'])}")
+            lines.append(f"    {district_str} | {detail_str} | {format_price(l['price_trieu'])} | dang {posted_str}")
             lines.append(f"    {l['url']}")
         lines.append("")
     return "\n".join(lines)
@@ -433,6 +484,22 @@ def cmd_generate():
         if len(implausible) > 10:
             print(f"    ... and {len(implausible) - 10} more", file=sys.stderr)
     listings = [l for l in listings if l not in implausible]
+
+    if MAX_LISTING_AGE_DAYS > 0:
+        today = datetime.now().date()
+        cutoff = today - timedelta(days=MAX_LISTING_AGE_DAYS)
+        too_old = [
+            l for l in listings
+            if l["posted_date"] and date.fromisoformat(l["posted_date"]) < cutoff
+        ]
+        if too_old:
+            print(f"  Dropping {len(too_old)} listing(s) posted more than "
+                  f"{MAX_LISTING_AGE_DAYS} day(s) ago (price may be stale):", file=sys.stderr)
+            for l in too_old[:10]:
+                print(f"    [{l['category']}] posted {l['posted_label']} - {l['title'][:60]}", file=sys.stderr)
+            if len(too_old) > 10:
+                print(f"    ... and {len(too_old) - 10} more", file=sys.stderr)
+        listings = [l for l in listings if l not in too_old]
 
     listings = sort_listings_by_price(listings)
     print(f"Total parsed: {len(listings)} listing(s).")
