@@ -123,7 +123,7 @@ CATEGORIES = [
 # to find where each listing "starts" in the raw HTML (slicing between
 # consecutive matches) and to dedupe/hash listings run-to-run.
 LISTING_HREF_RE = re.compile(r'href="([^"]*-id(\d+)/?)"')
-AREA_RE = re.compile(r"([\d][\d.,]*)\s*m2")
+AREA_RE = re.compile(r"([\d][\d.,]*)\s*m\s*2")
 PN_RE = re.compile(r"(\d+)\s*PN")
 WC_RE = re.compile(r"(\d+)\s*WC")
 DISTRICT_RE = re.compile(r"((?:Quận|Huyện|Thị Xã)(?:\s+\S+){1,3}),\s*Hà Nội")
@@ -364,6 +364,21 @@ def sort_listings_by_price(listings):
     return sorted_listings
 
 
+def group_by_district(listings):
+    """Groups an already price-sorted list of listings by district,
+    preserving price order within each district. Unknown districts are
+    grouped together under None and always sorted last.
+    """
+    groups = {}
+    for l in listings:
+        groups.setdefault(l["district"], []).append(l)
+
+    def sort_key(district):
+        return (district is None, district or "")
+
+    return [(d, groups[d]) for d in sorted(groups, key=sort_key)]
+
+
 def fetch_all_listings():
     all_listings = []
     for category, base_url in CATEGORIES:
@@ -382,17 +397,28 @@ def build_listing_row_html(l):
     if l["bathrooms"]:
         details.append(f"{escape(l['bathrooms'])} WC")
     detail_str = " · ".join(details) if details else "—"
-    district_str = escape(l["district"]) if l["district"] else "—"
     posted_str = escape(l["posted_label"]) if l["posted_label"] else "?"
 
     return f"""
 <tr>
 <td style="padding:8px 12px;border-bottom:1px solid #eee;">
   <a href="{escape(l['url'])}" style="color:#1a5fb4;text-decoration:none;font-weight:bold;">{escape(l['title'])}</a><br>
-  <span style="color:#666;font-size:12px;">{district_str} · {detail_str} · đăng {posted_str}</span>
+  <span style="color:#666;font-size:12px;">{detail_str} · đăng {posted_str}</span>
 </td>
 <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap;font-weight:bold;">{price_str}</td>
 </tr>"""
+
+
+def build_district_section_html(district, district_listings):
+    district_label = escape(district) if district else "Không rõ quận/huyện"
+    rows = "\n".join(build_listing_row_html(l) for l in district_listings)
+    return f"""
+<h3 style="color:#333;font-size:15px;margin-top:18px;margin-bottom:4px;">{district_label} ({len(district_listings)} tin)</h3>
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:640px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
+<tbody>
+{rows}
+</tbody>
+</table>"""
 
 
 def build_html(listings, timestamp):
@@ -404,14 +430,13 @@ def build_html(listings, timestamp):
             cat_listings = [l for l in listings if l["category"] == category]
             if not cat_listings:
                 continue
-            rows = "\n".join(build_listing_row_html(l) for l in cat_listings)
+            district_sections = "\n".join(
+                build_district_section_html(district, district_listings)
+                for district, district_listings in group_by_district(cat_listings)
+            )
             sections.append(f"""
 <h2 style="color:#1a5fb4;font-size:18px;margin-top:28px;">{escape(category)} ({len(cat_listings)} tin)</h2>
-<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:640px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-<tbody>
-{rows}
-</tbody>
-</table>""")
+{district_sections}""")
         body = "\n".join(sections)
 
     return f"""\
@@ -435,20 +460,22 @@ def build_plain_text(listings, timestamp):
         if not cat_listings:
             continue
         lines.append(f"=== {category} ({len(cat_listings)} tin) ===")
-        for l in cat_listings:
-            details = []
-            if l["area"]:
-                details.append(f"{l['area']} m2")
-            if l["bedrooms"]:
-                details.append(f"{l['bedrooms']} PN")
-            if l["bathrooms"]:
-                details.append(f"{l['bathrooms']} WC")
-            detail_str = ", ".join(details) if details else "—"
-            district_str = l["district"] or "—"
-            posted_str = l["posted_label"] or "?"
-            lines.append(f"  {l['title']}")
-            lines.append(f"    {district_str} | {detail_str} | {format_price(l['price_trieu'])} | dang {posted_str}")
-            lines.append(f"    {l['url']}")
+        for district, district_listings in group_by_district(cat_listings):
+            district_label = district or "Khong ro quan/huyen"
+            lines.append(f"  --- {district_label} ({len(district_listings)} tin) ---")
+            for l in district_listings:
+                details = []
+                if l["area"]:
+                    details.append(f"{l['area']} m2")
+                if l["bedrooms"]:
+                    details.append(f"{l['bedrooms']} PN")
+                if l["bathrooms"]:
+                    details.append(f"{l['bathrooms']} WC")
+                detail_str = ", ".join(details) if details else "—"
+                posted_str = l["posted_label"] or "?"
+                lines.append(f"    {l['title']}")
+                lines.append(f"      {detail_str} | {format_price(l['price_trieu'])} | dang {posted_str}")
+                lines.append(f"      {l['url']}")
         lines.append("")
     return "\n".join(lines)
 
