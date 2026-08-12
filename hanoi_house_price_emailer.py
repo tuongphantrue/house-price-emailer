@@ -313,10 +313,40 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     }
 
 
-def fetch_category_listings(category, base_url):
+# Apartments are the priority category - keep paginating past
+# MAX_PAGES_PER_CATEGORY for apartments specifically until at least this
+# many listings SURVIVE filtering (price plausibility/age/budget), since
+# those filters can otherwise shrink the count well below what's useful.
+# SAFETY_MAX_PAGES_PER_CATEGORY is a hard ceiling so a bad run can't
+# spiral into hundreds of requests.
+MIN_APARTMENT_LISTINGS = 50
+SAFETY_MAX_PAGES_PER_CATEGORY = 40
+
+
+def passes_filters(l, age_cutoff):
+    price = l["price_trieu"]
+    if isinstance(price, (int, float)) and price < MIN_PLAUSIBLE_PRICE_TRIEU:
+        return False
+    if age_cutoff is not None and l["posted_date"] and date.fromisoformat(l["posted_date"]) < age_cutoff:
+        return False
+    if MAX_PRICE_TRIEU > 0:
+        if not (isinstance(price, (int, float)) and price <= MAX_PRICE_TRIEU):
+            return False
+    return True
+
+
+def fetch_category_listings(category, base_url, max_pages, target_valid_count=None, age_cutoff=None):
     listings = []
     seen_ids = set()
-    for page in range(1, MAX_PAGES_PER_CATEGORY + 1):
+    valid_count = 0
+    safety_cap = max(max_pages, SAFETY_MAX_PAGES_PER_CATEGORY) if target_valid_count else max_pages
+
+    for page in range(1, safety_cap + 1):
+        if target_valid_count and valid_count >= target_valid_count:
+            break
+        if page > max_pages and not target_valid_count:
+            break
+
         url = base_url if page == 1 else f"{base_url}?cp={page}"
         if page > 1 and PAGE_REQUEST_DELAY > 0:
             time.sleep(PAGE_REQUEST_DELAY)
@@ -337,14 +367,22 @@ def fetch_category_listings(category, base_url):
             if lid in seen_ids:
                 continue
             seen_ids.add(lid)
-            listings.append(parse_listing_chunk(lid, href, chunk_html, category))
+            parsed = parse_listing_chunk(lid, href, chunk_html, category)
+            listings.append(parsed)
             new_this_page += 1
+            if target_valid_count and passes_filters(parsed, age_cutoff):
+                valid_count += 1
 
+        status = f" ({valid_count} passing filters)" if target_valid_count else ""
         print(f"  [{category}] page {page}: {new_this_page} new listing(s) parsed "
-              f"(total so far: {len(listings)})")
+              f"(total so far: {len(listings)}){status}")
 
         if new_this_page == 0:
             break
+
+    if target_valid_count and valid_count < target_valid_count:
+        print(f"  [{category}] WARNING: only {valid_count}/{target_valid_count} listings passed "
+              f"filters after {min(page, safety_cap)} page(s) (safety cap reached).", file=sys.stderr)
 
     return listings
 
@@ -385,10 +423,20 @@ def group_by_district(listings):
 
 
 def fetch_all_listings():
+    age_cutoff = None
+    if MAX_LISTING_AGE_DAYS > 0:
+        age_cutoff = datetime.now().date() - timedelta(days=MAX_LISTING_AGE_DAYS)
+
     all_listings = []
     for category, base_url in CATEGORIES:
-        print(f"Fetching {category} ({base_url}) - up to {MAX_PAGES_PER_CATEGORY} page(s) ...")
-        all_listings.extend(fetch_category_listings(category, base_url))
+        target = MIN_APARTMENT_LISTINGS if category == "Căn hộ / Chung cư" else None
+        page_note = f"up to {SAFETY_MAX_PAGES_PER_CATEGORY} page(s) (targeting {target} listings after filters)" \
+            if target else f"up to {MAX_PAGES_PER_CATEGORY} page(s)"
+        print(f"Fetching {category} ({base_url}) - {page_note} ...")
+        all_listings.extend(fetch_category_listings(
+            category, base_url, MAX_PAGES_PER_CATEGORY,
+            target_valid_count=target, age_cutoff=age_cutoff,
+        ))
     return all_listings
 
 
