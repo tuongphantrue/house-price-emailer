@@ -113,6 +113,11 @@ PAGE_REQUEST_DELAY = float(os.environ.get("PAGE_REQUEST_DELAY", "1.0"))
 # as fact. Lower this if you genuinely want to see sub-threshold listings
 # (e.g. very small/rural huyện listings can legitimately be cheaper).
 MIN_PLAUSIBLE_PRICE_TRIEU = float(os.environ.get("MIN_PLAUSIBLE_PRICE_TRIEU", "300"))
+# Price ceiling in triệu đồng (1 tỷ = 1000 triệu) - hardcoded to 5 tỷ VND.
+# Listings with no confirmed price (unparsed, or "Thỏa thuận"/negotiable)
+# are excluded too, since they can't be confirmed to meet the ceiling.
+# Set to 0 to disable and show listings at any price.
+MAX_PRICE_TRIEU = 5000.0
 
 CATEGORIES = [
     ("Căn hộ / Chung cư", os.environ.get("APARTMENT_URL", "https://mogi.vn/ha-noi/mua-can-ho-chung-cu")),
@@ -527,6 +532,20 @@ def cmd_generate():
             if len(too_old) > 10:
                 print(f"    ... and {len(too_old) - 10} more", file=sys.stderr)
         listings = [l for l in listings if l not in too_old]
+
+    if MAX_PRICE_TRIEU > 0:
+        over_budget = [
+            l for l in listings
+            if not (isinstance(l["price_trieu"], (int, float)) and l["price_trieu"] <= MAX_PRICE_TRIEU)
+        ]
+        if over_budget:
+            print(f"  Dropping {len(over_budget)} listing(s) over budget or with unconfirmed price "
+                  f"(ceiling: {format_price(MAX_PRICE_TRIEU)}):", file=sys.stderr)
+            for l in over_budget[:10]:
+                print(f"    [{l['category']}] {format_price(l['price_trieu'])} - {l['title'][:60]}", file=sys.stderr)
+            if len(over_budget) > 10:
+                print(f"    ... and {len(over_budget) - 10} more", file=sys.stderr)
+        listings = [l for l in listings if l not in over_budget]
 
     listings = sort_listings_by_price(listings)
     print(f"Total parsed: {len(listings)} listing(s).")
