@@ -114,10 +114,49 @@ MIN_PLAUSIBLE_PRICE_TRIEU = float(os.environ.get("MIN_PLAUSIBLE_PRICE_TRIEU", "3
 # Set to 0 to disable and show listings at any price.
 MAX_PRICE_TRIEU = 5000.0
 
-CATEGORIES = [
-    ("Căn hộ / Chung cư", os.environ.get("APARTMENT_URL", "https://mogi.vn/ha-noi/mua-can-ho-chung-cu")),
-    ("Nhà", os.environ.get("HOUSE_URL", "https://mogi.vn/ha-noi/mua-nha")),
+# Category URL SUFFIXES - combined with each district slug below to build
+# per-district listing URLs, e.g. https://mogi.vn/ha-noi/quan-cau-giay/mua-can-ho-chung-cu
+# Fetching per-district pages (confirmed working URLs - see comment below)
+# instead of paginating one citywide URL, since the citywide page's ?cp=N
+# pagination turned out to not reliably return new results (see git
+# history). Each district page returns its own first ~15 listings with no
+# pagination needed, so combining a handful of districts easily clears 50.
+CATEGORY_URL_SUFFIX = {
+    "Căn hộ / Chung cư": "mua-can-ho-chung-cu",
+    "Nhà": "mua-nha",
+}
+
+# Hanoi district slugs, confirmed against real mogi.vn URLs for at least
+# quan-cau-giay, quan-hai-ba-trung, quan-ha-dong, and quan-dong-da (spot
+# checked directly) - the rest follow the same "quan-x"/"huyen-x" naming
+# convention used consistently across mogi.vn's district pages elsewhere
+# on the site, but weren't each individually re-verified.
+HANOI_DISTRICT_SLUGS = [
+    ("Quận Ba Đình", "quan-ba-dinh"),
+    ("Quận Cầu Giấy", "quan-cau-giay"),
+    ("Quận Đống Đa", "quan-dong-da"),
+    ("Quận Hai Bà Trưng", "quan-hai-ba-trung"),
+    ("Quận Hoàn Kiếm", "quan-hoan-kiem"),
+    ("Quận Hoàng Mai", "quan-hoang-mai"),
+    ("Quận Long Biên", "quan-long-bien"),
+    ("Quận Tây Hồ", "quan-tay-ho"),
+    ("Quận Thanh Xuân", "quan-thanh-xuan"),
+    ("Quận Hà Đông", "quan-ha-dong"),
+    ("Quận Bắc Từ Liêm", "quan-bac-tu-liem"),
+    ("Quận Nam Từ Liêm", "quan-nam-tu-liem"),
+    ("Huyện Mê Linh", "huyen-me-linh"),
+    ("Huyện Đông Anh", "huyen-dong-anh"),
+    ("Huyện Gia Lâm", "huyen-gia-lam"),
+    ("Huyện Sóc Sơn", "huyen-soc-son"),
+    ("Huyện Thanh Trì", "huyen-thanh-tri"),
+    ("Huyện Hoài Đức", "huyen-hoai-duc"),
+    ("Huyện Chương Mỹ", "huyen-chuong-my"),
+    ("Huyện Đan Phượng", "huyen-dan-phuong"),
+    ("Huyện Thanh Oai", "huyen-thanh-oai"),
+    ("Huyện Thường Tín", "huyen-thuong-tin"),
 ]
+
+CATEGORIES = [(cat, None) for cat in CATEGORY_URL_SUFFIX]
 
 # Every listing's detail-page URL ends in -idNNNNNNN - that ID is used both
 # to find where each listing "starts" in the raw HTML (slicing between
@@ -143,9 +182,19 @@ POSTED_EXPLICIT_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
 # may already be sold). Set to 0 to disable age filtering entirely.
 MAX_LISTING_AGE_DAYS = int(os.environ.get("MAX_LISTING_AGE_DAYS", "90"))
 
-# Max chunk size (chars of raw HTML) to look at per listing, in case two
-# consecutive listing IDs are unexpectedly far apart in the markup.
-MAX_CHUNK_CHARS = 4000
+# Max chunk size (chars of raw HTML) to look at per listing, used as a
+# fallback when a listing has no "next listing ID" to bound it against
+# (typically the last listing found on a page) - in that case there's
+# nothing to stop the chunk at, so it's capped here instead. Too large and
+# unrelated page content (sidebar/footer/related-listings widgets) can leak
+# into the chunk and get mistaken for this listing's price/area - this bit
+# us once already (a real "6,7 tỷ" listing showed an unrelated "4 tỷ 200
+# triệu" instead). Too small and a genuinely verbose card gets truncated
+# before reaching its own price. 1500 is a guess without visibility into
+# the real markup size - watch for listings missing area/price/date after
+# changing this and adjust up if fields start going missing, or down if
+# implausible cross-contaminated values (like the one above) keep appearing.
+MAX_CHUNK_CHARS = 1500
 
 
 def load_last_hash(path=STATE_FILE):
@@ -291,7 +340,11 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     pn_m = PN_RE.search(text)
     wc_m = WC_RE.search(text)
     district_m = DISTRICT_RE.search(text)
-    price = parse_price_trieu(text)
+    # A price mentioned directly in the title (e.g. "...Giá 6,7 tỷ") is
+    # unambiguously this listing's price - prefer it over a price found
+    # anywhere else in the chunk, since the wider chunk can occasionally
+    # include unrelated content (see MAX_CHUNK_CHARS comment above).
+    price = (parse_price_trieu(title) if title else None) or parse_price_trieu(text)
     posted_label, posted_date = parse_posted_date(text)
 
     url = href if href.startswith("http") else f"https://mogi.vn{href}"
@@ -323,19 +376,63 @@ def passes_filters(l, age_cutoff):
     return True
 
 
-def fetch_category_listings(category, base_url, age_cutoff=None):
-    """Fetches a single page (no pagination) for the given category."""
-    try:
-        html = fetch_page(base_url)
-    except requests.RequestException as e:
-        print(f"  [{category}] failed to fetch {base_url}: {e}", file=sys.stderr)
-        return []
+# Hardcoded target - keep fetching one district at a time per category
+# until this many listings SURVIVE filtering (price plausibility/age/
+# budget), or all districts in HANOI_DISTRICT_SLUGS have been checked
+# (a natural cap - no separate safety limit needed since that list is
+# finite). No env vars needed - the number is fixed here.
+MIN_LISTINGS_PER_CATEGORY = 50
+PAGE_REQUEST_DELAY_SECONDS = 1.0
 
-    chunks = split_listing_chunks(html)
-    listings = [parse_listing_chunk(lid, href, chunk_html, category) for lid, href, chunk_html in chunks]
 
-    valid_count = sum(1 for l in listings if passes_filters(l, age_cutoff))
-    print(f"  [{category}] {len(listings)} listing(s) parsed, {valid_count} passing filters")
+def fetch_category_listings(category, age_cutoff=None):
+    """Fetches one page per Hanoi district (no pagination) for the given
+    category, moving to the next district until MIN_LISTINGS_PER_CATEGORY
+    listings have survived filtering, or districts run out.
+    """
+    suffix = CATEGORY_URL_SUFFIX[category]
+    listings = []
+    seen_ids = set()
+    valid_count = 0
+
+    for district_name, slug in HANOI_DISTRICT_SLUGS:
+        if valid_count >= MIN_LISTINGS_PER_CATEGORY:
+            break
+
+        url = f"https://mogi.vn/ha-noi/{slug}/{suffix}"
+        if listings:  # be polite between requests, skip delay before the first
+            time.sleep(PAGE_REQUEST_DELAY_SECONDS)
+        try:
+            html = fetch_page(url)
+        except requests.RequestException as e:
+            print(f"  [{category}] failed to fetch {district_name} ({url}): {e}", file=sys.stderr)
+            continue
+
+        chunks = split_listing_chunks(html)
+        if not chunks:
+            print(f"  [{category}] {district_name}: 0 listing IDs found (page structure may "
+                  f"have changed, or genuinely no listings) - skipping", file=sys.stderr)
+            continue
+
+        new_here = 0
+        for lid, href, chunk_html in chunks:
+            if lid in seen_ids:
+                continue
+            seen_ids.add(lid)
+            parsed = parse_listing_chunk(lid, href, chunk_html, category)
+            listings.append(parsed)
+            new_here += 1
+            if passes_filters(parsed, age_cutoff):
+                valid_count += 1
+
+        print(f"  [{category}] {district_name}: {new_here} listing(s) parsed "
+              f"(total so far: {len(listings)}, {valid_count} passing filters)")
+
+    if valid_count < MIN_LISTINGS_PER_CATEGORY:
+        print(f"  [{category}] WARNING: only {valid_count}/{MIN_LISTINGS_PER_CATEGORY} listings "
+              f"passed filters after checking all {len(HANOI_DISTRICT_SLUGS)} district page(s).",
+              file=sys.stderr)
+
     return listings
 
 
@@ -380,9 +477,10 @@ def fetch_all_listings():
         age_cutoff = datetime.now().date() - timedelta(days=MAX_LISTING_AGE_DAYS)
 
     all_listings = []
-    for category, base_url in CATEGORIES:
-        print(f"Fetching {category} ({base_url}) - single page, no pagination ...")
-        all_listings.extend(fetch_category_listings(category, base_url, age_cutoff=age_cutoff))
+    for category, _ in CATEGORIES:
+        print(f"Fetching {category} - targeting {MIN_LISTINGS_PER_CATEGORY} listings after "
+              f"filters, checking up to {len(HANOI_DISTRICT_SLUGS)} district page(s) ...")
+        all_listings.extend(fetch_category_listings(category, age_cutoff=age_cutoff))
     return all_listings
 
 
