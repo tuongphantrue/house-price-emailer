@@ -154,6 +154,11 @@ HANOI_DISTRICT_SLUGS = [
     ("Huyện Đan Phượng", "huyen-dan-phuong"),
     ("Huyện Thanh Oai", "huyen-thanh-oai"),
     ("Huyện Thường Tín", "huyen-thuong-tin"),
+    ("Huyện Ba Vì", "huyen-ba-vi"),
+    ("Huyện Phúc Thọ", "huyen-phuc-tho"),
+    ("Huyện Quốc Oai", "huyen-quoc-oai"),
+    ("Huyện Thạch Thất", "huyen-thach-that"),
+    ("Thị Xã Sơn Tây", "thi-xa-son-tay"),
 ]
 
 CATEGORIES = [(cat, None) for cat in CATEGORY_URL_SUFFIX]
