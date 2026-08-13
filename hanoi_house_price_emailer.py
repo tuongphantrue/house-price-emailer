@@ -171,6 +171,11 @@ AREA_RE = re.compile(r"([\d][\d.,]*)\s*m\s*2")
 PN_RE = re.compile(r"(\d+)\s*PN")
 WC_RE = re.compile(r"(\d+)\s*WC")
 DISTRICT_RE = re.compile(r"((?:Quận|Huyện|Thị Xã)(?:\s+\S+){1,3}),\s*Hà Nội")
+OTHER_CITY_RE = re.compile(
+    r"TPHCM|TP\.?\s*HCM|Tp\.?\s*Hồ Chí Minh|Thành phố Hồ Chí Minh|"
+    r"Đà Nẵng|Hải Phòng|Cần Thơ|Bình Dương|Đồng Nai|Bà Rịa|Nha Trang|Khánh Hòa",
+    re.IGNORECASE,
+)
 TY_TRIEU_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*tỷ(?:\s*(\d+(?:[.,]\d+)?)\s*triệu)?")
 TRIEU_ONLY_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*triệu")
 
@@ -343,6 +348,15 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     soup = BeautifulSoup(chunk_html, "html.parser")
     text = re.sub(r"\s+", " ", soup.get_text(" ")).strip()
 
+    # District-scoped Hanoi URLs turned out to occasionally include
+    # cross-city content anyway (spotted a real Quận Bình Thạnh, TPHCM
+    # listing coming through a /ha-noi/... page - likely a
+    # suggested/sponsored listing bleeding in). Guard against it two ways:
+    # require a confirmed "..., Hà Nội" district match, AND explicitly
+    # reject if another major city is mentioned at all.
+    if OTHER_CITY_RE.search(text):
+        return None
+
     title_tag = soup.find("a")
     title = title_tag.get_text(" ", strip=True) if title_tag else None
     # image alt text is often the real title when the <a> wraps only an <img>,
@@ -356,6 +370,8 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     pn_m = PN_RE.search(text)
     wc_m = WC_RE.search(text)
     district_m = DISTRICT_RE.search(text)
+    if not district_m:
+        return None
     # A price mentioned directly in the title (e.g. "...Giá 6,7 tỷ") is
     # unambiguously this listing's price - prefer it over a price found
     # anywhere else in the chunk, since the wider chunk can occasionally
@@ -443,18 +459,23 @@ def fetch_category_listings(category, age_cutoff=None):
                 break
 
             new_here = 0
+            dropped_other_city = 0
             for lid, href, chunk_html in chunks:
                 if lid in seen_ids:
                     continue
                 seen_ids.add(lid)
+                new_here += 1  # counts as "new" for pagination-progress purposes even if dropped below
                 parsed = parse_listing_chunk(lid, href, chunk_html, category)
+                if parsed is None:
+                    dropped_other_city += 1
+                    continue
                 listings.append(parsed)
-                new_here += 1
                 if passes_filters(parsed, age_cutoff):
                     valid_count += 1
 
-            print(f"  [{category}] {district_name} p{district_page}: {new_here} listing(s) parsed "
-                  f"(total so far: {len(listings)}, {valid_count} passing filters)")
+            status = f", {dropped_other_city} dropped as non-Hanoi" if dropped_other_city else ""
+            print(f"  [{category}] {district_name} p{district_page}: {new_here} new listing(s) found"
+                  f"{status} (total kept so far: {len(listings)}, {valid_count} passing filters)")
 
             if new_here == 0:
                 # this district's own pagination isn't returning anything new either -
