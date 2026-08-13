@@ -310,6 +310,14 @@ def split_listing_chunks(html):
     """Slice the raw page HTML into one chunk per listing, using each
     listing's -idNNNN URL as the boundary (dedupes the image-link +
     title-link pair that both point at the same listing).
+
+    Each chunk starts at the enclosing tag's opening '<', not at the
+    href="..." match position itself - starting mid-tag (right at the
+    href attribute) produces malformed HTML once sliced, which made
+    BeautifulSoup mis-parse the fragment and occasionally return the
+    wrong <a> tag entirely (a real bug: one listing's title/price ended up
+    completely mismatched with its own - correct - URL). Rewinding to the
+    preceding '<' keeps the opening <a ...> tag intact.
     """
     matches = list(LISTING_HREF_RE.finditer(html))
     seen = {}
@@ -317,8 +325,11 @@ def split_listing_chunks(html):
     for m in matches:
         href, listing_id = m.group(1), m.group(2)
         if listing_id not in seen:
-            seen[listing_id] = m.start()
-            order.append((listing_id, href, m.start()))
+            tag_start = html.rfind("<", 0, m.start())
+            if tag_start == -1:
+                tag_start = m.start()
+            seen[listing_id] = tag_start
+            order.append((listing_id, href, tag_start))
 
     chunks = []
     for i, (lid, href, start) in enumerate(order):
