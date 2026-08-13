@@ -185,7 +185,7 @@ POSTED_EXPLICIT_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
 # Listings aren't shown if their post is older than this many days - an old
 # post's asking price may no longer reflect the current market (or the unit
 # may already be sold). Set to 0 to disable age filtering entirely.
-MAX_LISTING_AGE_DAYS = int(os.environ.get("MAX_LISTING_AGE_DAYS", "90"))
+MAX_LISTING_AGE_DAYS = int(os.environ.get("MAX_LISTING_AGE_DAYS", "365"))
 
 # Max chunk size (chars of raw HTML) to look at per listing, used as a
 # fallback when a listing has no "next listing ID" to bound it against
@@ -390,9 +390,14 @@ MIN_LISTINGS_PER_CATEGORY = 50
 PAGE_REQUEST_DELAY_SECONDS = 1.0
 
 
+MAX_PAGES_PER_DISTRICT = 5  # try ?cp=2..5 within each district page too
+
+
 def fetch_category_listings(category, age_cutoff=None):
-    """Fetches one page per Hanoi district (no pagination) for the given
-    category, moving to the next district until MIN_LISTINGS_PER_CATEGORY
+    """Fetches up to MAX_PAGES_PER_DISTRICT pages per Hanoi district for the
+    given category, moving to the next district once a district's own
+    pagination stops returning new listings (or the per-district page cap
+    is hit), continuing across districts until MIN_LISTINGS_PER_CATEGORY
     listings have survived filtering, or districts run out.
     """
     suffix = CATEGORY_URL_SUFFIX[category]
@@ -404,39 +409,51 @@ def fetch_category_listings(category, age_cutoff=None):
         if valid_count >= MIN_LISTINGS_PER_CATEGORY:
             break
 
-        url = f"https://mogi.vn/ha-noi/{slug}/{suffix}"
-        if listings:  # be polite between requests, skip delay before the first
-            time.sleep(PAGE_REQUEST_DELAY_SECONDS)
-        try:
-            html = fetch_page(url)
-        except requests.RequestException as e:
-            print(f"  [{category}] failed to fetch {district_name} ({url}): {e}", file=sys.stderr)
-            continue
+        base_url = f"https://mogi.vn/ha-noi/{slug}/{suffix}"
+        for district_page in range(1, MAX_PAGES_PER_DISTRICT + 1):
+            if valid_count >= MIN_LISTINGS_PER_CATEGORY:
+                break
 
-        chunks = split_listing_chunks(html)
-        if not chunks:
-            print(f"  [{category}] {district_name}: 0 listing IDs found (page structure may "
-                  f"have changed, or genuinely no listings) - skipping", file=sys.stderr)
-            continue
+            url = base_url if district_page == 1 else f"{base_url}?cp={district_page}"
+            if listings:  # be polite between requests, skip delay before the very first
+                time.sleep(PAGE_REQUEST_DELAY_SECONDS)
+            try:
+                html = fetch_page(url)
+            except requests.RequestException as e:
+                print(f"  [{category}] failed to fetch {district_name} p{district_page} ({url}): {e}",
+                      file=sys.stderr)
+                break
 
-        new_here = 0
-        for lid, href, chunk_html in chunks:
-            if lid in seen_ids:
-                continue
-            seen_ids.add(lid)
-            parsed = parse_listing_chunk(lid, href, chunk_html, category)
-            listings.append(parsed)
-            new_here += 1
-            if passes_filters(parsed, age_cutoff):
-                valid_count += 1
+            chunks = split_listing_chunks(html)
+            if not chunks:
+                if district_page == 1:
+                    print(f"  [{category}] {district_name}: 0 listing IDs found (page structure "
+                          f"may have changed, or genuinely no listings) - skipping district", file=sys.stderr)
+                break
 
-        print(f"  [{category}] {district_name}: {new_here} listing(s) parsed "
-              f"(total so far: {len(listings)}, {valid_count} passing filters)")
+            new_here = 0
+            for lid, href, chunk_html in chunks:
+                if lid in seen_ids:
+                    continue
+                seen_ids.add(lid)
+                parsed = parse_listing_chunk(lid, href, chunk_html, category)
+                listings.append(parsed)
+                new_here += 1
+                if passes_filters(parsed, age_cutoff):
+                    valid_count += 1
+
+            print(f"  [{category}] {district_name} p{district_page}: {new_here} listing(s) parsed "
+                  f"(total so far: {len(listings)}, {valid_count} passing filters)")
+
+            if new_here == 0:
+                # this district's own pagination isn't returning anything new either -
+                # move on to the next district rather than wasting more requests here
+                break
 
     if valid_count < MIN_LISTINGS_PER_CATEGORY:
         print(f"  [{category}] WARNING: only {valid_count}/{MIN_LISTINGS_PER_CATEGORY} listings "
-              f"passed filters after checking all {len(HANOI_DISTRICT_SLUGS)} district page(s).",
-              file=sys.stderr)
+              f"passed filters after checking all {len(HANOI_DISTRICT_SLUGS)} district(s) "
+              f"(up to {MAX_PAGES_PER_DISTRICT} page(s) each).", file=sys.stderr)
 
     return listings
 
