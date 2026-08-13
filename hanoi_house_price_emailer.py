@@ -176,6 +176,7 @@ OTHER_CITY_RE = re.compile(
     r"Đà Nẵng|Hải Phòng|Cần Thơ|Bình Dương|Đồng Nai|Bà Rịa|Nha Trang|Khánh Hòa",
     re.IGNORECASE,
 )
+MINI_APARTMENT_RE = re.compile(r"chung\s*cư\s*mini|\bCCMN\b", re.IGNORECASE)
 TY_TRIEU_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*tỷ(?:\s*(\d+(?:[.,]\d+)?)\s*triệu)?")
 TRIEU_ONLY_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*triệu")
 
@@ -356,6 +357,8 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     # reject if another major city is mentioned at all.
     if OTHER_CITY_RE.search(text):
         return None
+    if MINI_APARTMENT_RE.search(text):
+        return None
 
     title_tag = soup.find("a")
     title = title_tag.get_text(" ", strip=True) if title_tag else None
@@ -459,7 +462,7 @@ def fetch_category_listings(category, age_cutoff=None):
                 break
 
             new_here = 0
-            dropped_other_city = 0
+            dropped_excluded = 0
             for lid, href, chunk_html in chunks:
                 if lid in seen_ids:
                     continue
@@ -467,13 +470,13 @@ def fetch_category_listings(category, age_cutoff=None):
                 new_here += 1  # counts as "new" for pagination-progress purposes even if dropped below
                 parsed = parse_listing_chunk(lid, href, chunk_html, category)
                 if parsed is None:
-                    dropped_other_city += 1
+                    dropped_excluded += 1
                     continue
                 listings.append(parsed)
                 if passes_filters(parsed, age_cutoff):
                     valid_count += 1
 
-            status = f", {dropped_other_city} dropped as non-Hanoi" if dropped_other_city else ""
+            status = f", {dropped_excluded} dropped (non-Hanoi/mini-apartment)" if dropped_excluded else ""
             print(f"  [{category}] {district_name} p{district_page}: {new_here} new listing(s) found"
                   f"{status} (total kept so far: {len(listings)}, {valid_count} passing filters)")
 
