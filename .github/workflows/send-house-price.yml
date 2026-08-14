@@ -55,6 +55,15 @@ jobs:
       # inference action - needs COPILOT_PAT (a Personal Access Token with
       # "Copilot Requests" permission) added as a repo secret.
       # See: https://github.com/actions/ai-inference
+      # IMPORTANT: Copilot CLI must be installed BEFORE this step, or the
+      # action silently falls back to the (now-retired, July 30 2026)
+      # legacy GitHub Models endpoint and fails with a 410 error.
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+
+      - name: Install Copilot CLI
+        run: npm install -g @github/copilot
+
       - name: AI review listings
         id: ai_review
         if: hashFiles('email/ai_prompt.txt') != ''
