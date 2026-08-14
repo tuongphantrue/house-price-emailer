@@ -176,7 +176,32 @@ OTHER_CITY_RE = re.compile(
     r"Đà Nẵng|Hải Phòng|Cần Thơ|Bình Dương|Đồng Nai|Bà Rịa|Nha Trang|Khánh Hòa",
     re.IGNORECASE,
 )
-MINI_APARTMENT_RE = re.compile(r"chung\s*cư\s*mini|\bCCMN\b", re.IGNORECASE)
+# Hard filter: known-certain phrasings for "mini apartment" listings (a
+# distinct, informally-regulated housing type in Vietnam). Word order and
+# spacing vary a lot in real listings, so this covers several orderings/
+# abbreviations rather than one fixed phrase. \s* also matches zero spaces,
+# so "chungcumini" (no spaces) still matches.
+MINI_APARTMENT_RE = re.compile(
+    r"chung\s*c[uư]\s*mini|"
+    r"mini\s*chung\s*c[uư]|"
+    r"c[aă]n\s*h[ôo]\s*mini|"
+    r"mini\s*c[aă]n\s*h[ôo]|"
+    r"\bCCMN\b|"
+    r"\bCC\s*mini\b|"
+    r"\bCH\s*mini\b",
+    re.IGNORECASE,
+)
+# Soft heuristic: wording commonly seen in mini-apartment ads (individual
+# "sổ hồng riêng từng phòng" - separate title deed per room/unit - and
+# round-the-clock security marketed per-room, both signal a subdivided
+# building rather than a normal apartment) combined with an unusually
+# small area. Doesn't exclude the listing - just adds a review flag,
+# since small legitimate studios do exist and keyword matching alone
+# proved unreliable (see conversation - "CC Mini" was missed once already).
+MINI_APARTMENT_HINT_RE = re.compile(
+    r"sổ hồng riêng từng phòng|an ninh 24/24|khép kín riêng biệt", re.IGNORECASE
+)
+MINI_APARTMENT_HINT_MAX_AREA = 30  # m2
 TY_TRIEU_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*tỷ(?:\s*(\d+(?:[.,]\d+)?)\s*triệu)?")
 TRIEU_ONLY_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*triệu")
 
@@ -312,6 +337,54 @@ def format_price(price_trieu):
     return f"{price_trieu:.0f} triệu"
 
 
+# Sanity-check thresholds for flag_suspicious() below - a last line of
+# defense that runs on the final built listing, independent of whatever
+# specific bug pattern the earlier parsing filters were written against.
+# This exists because every bug found in this script so far (a title/price
+# belonging to the wrong listing, an unrelated city's listing slipping
+# through, a chung-cư-mini variant not yet in MINI_APARTMENT_RE) was only
+# caught by a human looking at the actual sent email - this catches the
+# same *shape* of problem (an implausible number, an internal
+# inconsistency) without needing to know the exact new wording in advance.
+MIN_PRICE_PER_M2_TRIEU = 15   # Hanoi apartments/houses are essentially
+MAX_PRICE_PER_M2_TRIEU = 500  # never priced outside this per-m2 range
+
+
+def flag_suspicious(l):
+    """Returns a list of short warning strings for anything about this
+    listing that looks off, or an empty list if it looks fine. Does not
+    remove the listing - just marks it for a human to double-check."""
+    warnings = []
+    price = l["price_trieu"]
+
+    if isinstance(price, (int, float)) and l["area"]:
+        try:
+            area = float(l["area"].replace(",", "."))
+            if area > 0:
+                per_m2 = price / area
+                if per_m2 < MIN_PRICE_PER_M2_TRIEU or per_m2 > MAX_PRICE_PER_M2_TRIEU:
+                    warnings.append(f"giá/m² bất thường ({per_m2:.0f} triệu/m²)")
+        except ValueError:
+            pass
+
+    if isinstance(price, (int, float)) and l["title"]:
+        title_price = parse_price_trieu(l["title"])
+        if isinstance(title_price, (int, float)) and abs(title_price - price) > max(50, price * 0.05):
+            warnings.append(f"giá trong tiêu đề ({format_price(title_price)}) khác giá hiển thị")
+
+    if l.get("has_mini_hint"):
+        area_val = None
+        if l["area"]:
+            try:
+                area_val = float(l["area"].replace(",", "."))
+            except ValueError:
+                pass
+        if area_val is None or area_val <= MINI_APARTMENT_HINT_MAX_AREA:
+            warnings.append("có thể là chung cư mini (từ ngữ + diện tích nhỏ)")
+
+    return warnings
+
+
 def split_listing_chunks(html):
     """Slice the raw page HTML into one chunk per listing, using each
     listing's -idNNNN URL as the boundary (dedupes the image-link +
@@ -381,6 +454,10 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     # include unrelated content (see MAX_CHUNK_CHARS comment above).
     price = (parse_price_trieu(title) if title else None) or parse_price_trieu(text)
     posted_label, posted_date = parse_posted_date(text)
+    # Soft hint (not a hard exclusion): wording common in mini-apartment ads,
+    # computed from the full chunk text since these phrases rarely appear
+    # in the title alone - see MINI_APARTMENT_HINT_RE comment above.
+    has_mini_hint = bool(MINI_APARTMENT_HINT_RE.search(text))
 
     url = href if href.startswith("http") else f"https://mogi.vn{href}"
 
@@ -396,6 +473,7 @@ def parse_listing_chunk(lid, href, chunk_html, category):
         "price_trieu": price,
         "posted_label": posted_label,
         "posted_date": posted_date.isoformat() if posted_date else None,
+        "has_mini_hint": has_mini_hint,
     }
 
 
@@ -554,11 +632,17 @@ def build_listing_row_html(l):
     district_str = escape(l["district"]) if l["district"] else "Không rõ quận/huyện"
     posted_str = escape(l["posted_label"]) if l["posted_label"] else "?"
 
+    warnings = flag_suspicious(l)
+    warning_html = ""
+    if warnings:
+        warning_text = escape("⚠️ Cần kiểm tra: " + "; ".join(warnings))
+        warning_html = f'<br><span style="color:#b45309;font-size:12px;font-weight:bold;">{warning_text}</span>'
+
     return f"""
 <tr>
 <td style="padding:8px 12px;border-bottom:1px solid #eee;">
   <a href="{escape(l['url'])}" style="color:#1a5fb4;text-decoration:none;font-weight:bold;">{escape(l['title'])}</a><br>
-  <span style="color:#666;font-size:12px;">{district_str} · {detail_str} · đăng {posted_str}</span>
+  <span style="color:#666;font-size:12px;">{district_str} · {detail_str} · đăng {posted_str}</span>{warning_html}
 </td>
 <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap;font-weight:bold;">{price_str}</td>
 </tr>"""
@@ -630,6 +714,9 @@ def build_plain_text(listings, timestamp):
             lines.append(f"  {l['title']}")
             lines.append(f"    {district_str} | {detail_str} | {format_price(l['price_trieu'])} | dang {posted_str}")
             lines.append(f"    {l['url']}")
+            warnings = flag_suspicious(l)
+            if warnings:
+                lines.append(f"    !! CAN KIEM TRA: {'; '.join(warnings)}")
         lines.append("")
     return "\n".join(lines)
 
@@ -644,7 +731,107 @@ def resolve_timestamp():
     return now, now.strftime("%H:%M %d/%m/%Y")
 
 
-def cmd_generate():
+LISTINGS_JSON_PATH = os.path.join(EMAIL_DIR, "listings.json")
+AI_PROMPT_PATH = os.path.join(EMAIL_DIR, "ai_prompt.txt")
+AI_RESPONSE_PATH = os.path.join(EMAIL_DIR, "ai_response.json")
+
+
+def build_ai_prompt(listings):
+    """Builds the prompt file for the AI review step (run as a separate
+    GitHub Actions step using actions/ai-inference - see README). Asks for
+    a strict JSON verdict per listing so apply_ai_verdicts() can parse it
+    without needing to understand free-form text.
+    """
+    compact = [
+        {
+            "id": l["id"],
+            "title": l["title"],
+            "district": l["district"],
+            "area_m2": l["area"],
+            "price": format_price(l["price_trieu"]),
+        }
+        for l in listings
+    ]
+    prompt = f"""You are reviewing a list of Hanoi real-estate listings scraped from a
+property site. For EACH listing, decide if it is a genuine, normal house
+or apartment FOR SALE in Hanoi, or if it should be rejected because it is:
+- a "chung cư mini" / mini-apartment / subdivided-room listing (any wording,
+  not just the literal words "mini" or "CCMN" - use judgment on the title)
+- located outside Hanoi
+- not actually a real-estate sale listing (spam, ad, duplicate, nonsense title)
+
+Respond with ONLY a JSON array, no markdown formatting, no code fences, no
+explanation before or after. Each element must be exactly:
+{{"id": "<id>", "verdict": "ok" or "reject", "reason": "<short reason, max 8 words>"}}
+
+Include every id from the input exactly once. Here is the input:
+
+{json.dumps(compact, ensure_ascii=False)}
+"""
+    with open(AI_PROMPT_PATH, "w", encoding="utf-8") as f:
+        f.write(prompt)
+
+
+def apply_ai_verdicts(listings):
+    """Reads the AI review response (if present) and drops any listing the
+    AI marked "reject". Designed to fail OPEN, not closed: if the response
+    file is missing, unparseable, or incomplete, this falls back to keeping
+    everything as-is (the existing rule-based filters and flag_suspicious()
+    remain the safety net either way) rather than blocking the whole email
+    over a malformed AI response - this step's output was never verified
+    against a real run, so it needs to degrade gracefully.
+    """
+    if not os.path.exists(AI_RESPONSE_PATH):
+        print("  No AI response file found - skipping AI review step (rule-based "
+              "filters and flag_suspicious() still apply).", file=sys.stderr)
+        return listings
+
+    with open(AI_RESPONSE_PATH, encoding="utf-8") as f:
+        raw = f.read().strip()
+
+    # Strip markdown code fences if the model wrapped its JSON in them
+    # despite being asked not to - common enough to guard against.
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+
+    try:
+        verdicts = json.loads(raw)
+        verdict_by_id = {v["id"]: v for v in verdicts if isinstance(v, dict) and "id" in v}
+    except (json.JSONDecodeError, TypeError, KeyError) as e:
+        print(f"  WARNING: could not parse AI response as JSON ({e}) - skipping AI "
+              f"review step for this run. Raw response (first 300 chars): {raw[:300]!r}",
+              file=sys.stderr)
+        return listings
+
+    rejected = []
+    kept = []
+    for l in listings:
+        v = verdict_by_id.get(l["id"])
+        if v and v.get("verdict") == "reject":
+            rejected.append((l, v.get("reason", "")))
+        else:
+            kept.append(l)
+
+    if rejected:
+        print(f"  AI review rejected {len(rejected)} listing(s):", file=sys.stderr)
+        for l, reason in rejected[:10]:
+            print(f"    [{l['category']}] {format_price(l['price_trieu'])} - {l['title'][:50]} - {reason}",
+                  file=sys.stderr)
+        if len(rejected) > 10:
+            print(f"    ... and {len(rejected) - 10} more", file=sys.stderr)
+
+    unmatched = len(listings) - len(verdict_by_id.keys() & {l["id"] for l in listings})
+    if unmatched:
+        print(f"  Note: AI response didn't cover {unmatched} listing(s) - those were kept "
+              f"(fails open).", file=sys.stderr)
+
+    return kept
+
+
+def cmd_prepare():
+    """Phase 1: fetch listings, apply the existing rule-based filters, and
+    write listings.json + the AI review prompt. Run cmd_build after an
+    external AI review step has (optionally) written ai_response.json.
+    """
     if os.path.exists(EMAIL_DIR):
         for f in os.listdir(EMAIL_DIR):
             os.remove(os.path.join(EMAIL_DIR, f))
@@ -697,7 +884,7 @@ def cmd_generate():
         listings = [l for l in listings if l not in over_budget]
 
     listings = sort_listings_by_price(listings)
-    print(f"Total parsed: {len(listings)} listing(s).")
+    print(f"Total parsed after rule-based filters: {len(listings)} listing(s).")
 
     priced = [l for l in listings if l["price_trieu"] is not None]
     if listings and len(priced) / len(listings) < 0.5:
@@ -706,6 +893,39 @@ def cmd_generate():
             "Mogi may have changed its price text format. Check parse_price_trieu().",
             file=sys.stderr,
         )
+
+    with open(LISTINGS_JSON_PATH, "w", encoding="utf-8") as f:
+        json.dump(listings, f, ensure_ascii=False)
+    build_ai_prompt(listings)
+    print(f"Wrote {len(listings)} listing(s) to {LISTINGS_JSON_PATH} and the AI review "
+          f"prompt to {AI_PROMPT_PATH}. Run the AI review step (see README), then run "
+          f"'build'.")
+
+
+def cmd_build():
+    """Phase 2: read listings.json, apply the AI review verdict (if
+    ai_response.json is present - written by the AI review workflow step),
+    apply flag_suspicious() to whatever remains, and write the final email.
+    """
+    if not os.path.exists(LISTINGS_JSON_PATH):
+        print(f"{LISTINGS_JSON_PATH} not found - run 'prepare' first.", file=sys.stderr)
+        sys.exit(1)
+    with open(LISTINGS_JSON_PATH, encoding="utf-8") as f:
+        listings = json.load(f)
+
+    listings = apply_ai_verdicts(listings)
+    print(f"Total after AI review: {len(listings)} listing(s).")
+
+    flagged = [(l, flag_suspicious(l)) for l in listings]
+    flagged = [(l, w) for l, w in flagged if w]
+    if flagged:
+        print(f"  {len(flagged)} listing(s) flagged for review in the email itself (marked with ⚠️):",
+              file=sys.stderr)
+        for l, warnings in flagged[:10]:
+            print(f"    [{l['category']}] {format_price(l['price_trieu'])} - {l['title'][:50]} - "
+                  f"{'; '.join(warnings)}", file=sys.stderr)
+        if len(flagged) > 10:
+            print(f"    ... and {len(flagged) - 10} more", file=sys.stderr)
 
     hash_input = [{"id": l["id"], "price_trieu": l["price_trieu"]} for l in listings]
     price_hash = hash_data(hash_input)
@@ -732,7 +952,7 @@ def cmd_generate():
         json.dump({"send": True, "listing_count": len(listings)}, f)
 
     save_last_hash(price_hash)
-    print(f"Generated email ({len(listings)} listings). Saved to ./{EMAIL_DIR}/")
+    print(f"Built email ({len(listings)} listings). Saved to ./{EMAIL_DIR}/")
 
 
 def cmd_send():
@@ -781,11 +1001,16 @@ def cmd_send():
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("generate", "send"):
-        print("Usage: python hanoi_house_price_emailer.py [generate|send]", file=sys.stderr)
+    if len(sys.argv) != 2 or sys.argv[1] not in ("prepare", "build", "send"):
+        print("Usage: python hanoi_house_price_emailer.py [prepare|build|send]", file=sys.stderr)
+        print("  prepare - fetch listings, apply rule-based filters, write listings.json + AI prompt")
+        print("  build   - apply AI review verdict (if present) and build the email")
+        print("  send    - send the built email via Gmail SMTP")
         sys.exit(1)
-    if sys.argv[1] == "generate":
-        cmd_generate()
+    if sys.argv[1] == "prepare":
+        cmd_prepare()
+    elif sys.argv[1] == "build":
+        cmd_build()
     else:
         cmd_send()
 
