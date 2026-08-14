@@ -458,6 +458,11 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     # computed from the full chunk text since these phrases rarely appear
     # in the title alone - see MINI_APARTMENT_HINT_RE comment above.
     has_mini_hint = bool(MINI_APARTMENT_HINT_RE.search(text))
+    # Full-ish text snippet for AI review context - lets the AI judge price
+    # plausibility against the actual description (floors, elevator,
+    # frontage, etc.), not just a fixed price/m2 threshold. Capped to keep
+    # the AI prompt a reasonable size across 50+ listings.
+    raw_snippet = text[:400]
 
     url = href if href.startswith("http") else f"https://mogi.vn{href}"
 
@@ -474,6 +479,7 @@ def parse_listing_chunk(lid, href, chunk_html, category):
         "posted_label": posted_label,
         "posted_date": posted_date.isoformat() if posted_date else None,
         "has_mini_hint": has_mini_hint,
+        "raw_snippet": raw_snippet,
     }
 
 
@@ -738,9 +744,9 @@ AI_RESPONSE_PATH = os.path.join(EMAIL_DIR, "ai_response.json")
 
 def build_ai_prompt(listings):
     """Builds the prompt file for the AI review step (run as a separate
-    GitHub Actions step using actions/ai-inference - see README). Asks for
-    a strict JSON verdict per listing so apply_ai_verdicts() can parse it
-    without needing to understand free-form text.
+    GitHub Actions step calling Copilot CLI directly - see workflow).
+    Asks for a strict JSON verdict per listing so apply_ai_verdicts() can
+    parse it without needing to understand free-form text.
     """
     compact = [
         {
@@ -749,16 +755,28 @@ def build_ai_prompt(listings):
             "district": l["district"],
             "area_m2": l["area"],
             "price": format_price(l["price_trieu"]),
+            "listing_text": l.get("raw_snippet", ""),
         }
         for l in listings
     ]
     prompt = f"""You are reviewing a list of Hanoi real-estate listings scraped from a
 property site. For EACH listing, decide if it is a genuine, normal house
-or apartment FOR SALE in Hanoi, or if it should be rejected because it is:
+or apartment FOR SALE in Hanoi at a plausible price, or if it should be
+rejected because it is:
 - a "chung cư mini" / mini-apartment / subdivided-room listing (any wording,
   not just the literal words "mini" or "CCMN" - use judgment on the title)
 - located outside Hanoi
 - not actually a real-estate sale listing (spam, ad, duplicate, nonsense title)
+- priced in a way that is clearly inconsistent with the listing's own
+  description - e.g. a multi-story house with an elevator, a large frontage,
+  or a large area priced at only a few hundred triệu đồng is almost always a
+  data-entry error (the "price" field probably picked up the wrong number
+  during scraping, or the seller mistyped it), not a real bargain. Use your
+  knowledge of realistic Hanoi property prices and the "listing_text" field
+  (the actual scraped description) to judge this, not just the area/price
+  ratio alone - a small area with a normal price is fine, but a price wildly
+  below what the description implies (floors, elevator, frontage, location)
+  should be rejected even if you can't independently know the "correct" price.
 
 Respond with ONLY a JSON array, no markdown formatting, no code fences, no
 explanation before or after. Each element must be exactly:
