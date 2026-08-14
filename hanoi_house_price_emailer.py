@@ -476,6 +476,20 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     # the AI prompt a reasonable size across 50+ listings.
     raw_snippet = text[:400]
 
+    # Thumbnail image - try src first, then common lazy-load attribute
+    # names (real markup unverified, so this is a best-effort guess at
+    # what attribute actually holds the real URL vs. a blank placeholder).
+    image_url = None
+    img_tag = soup.find("img")
+    if img_tag:
+        for attr in ("src", "data-src", "data-original", "data-lazy-src", "data-lazy"):
+            val = img_tag.get(attr)
+            if val and not val.startswith("data:"):  # skip inline base64 placeholder pixels
+                image_url = val
+                break
+    if image_url and not image_url.startswith("http"):
+        image_url = f"https://mogi.vn{image_url}" if image_url.startswith("/") else None
+
     url = href if href.startswith("http") else f"https://mogi.vn{href}"
 
     return {
@@ -483,6 +497,7 @@ def parse_listing_chunk(lid, href, chunk_html, category):
         "category": category,
         "title": title or "(không có tiêu đề)",
         "url": url,
+        "image_url": image_url,
         "district": district_m.group(1).strip() if district_m else None,
         "area": area_m.group(1) if area_m else None,
         "bedrooms": pn_m.group(1) if pn_m else None,
@@ -656,8 +671,19 @@ def build_listing_row_html(l):
         warning_text = escape("⚠️ Cần kiểm tra: " + "; ".join(warnings))
         warning_html = f'<br><span style="color:#b45309;font-size:12px;font-weight:bold;">{warning_text}</span>'
 
+    if l.get("image_url"):
+        thumb_html = (
+            f'<img src="{escape(l["image_url"])}" alt="" width="64" height="64" '
+            f'style="width:64px;height:64px;object-fit:cover;border-radius:4px;display:block;">'
+        )
+    else:
+        thumb_html = '<div style="width:64px;height:64px;background:#eee;border-radius:4px;"></div>'
+
     return f"""
 <tr>
+<td style="padding:8px 4px 8px 12px;border-bottom:1px solid #eee;width:64px;">
+  <a href="{escape(l['url'])}">{thumb_html}</a>
+</td>
 <td style="padding:8px 12px;border-bottom:1px solid #eee;">
   <a href="{escape(l['url'])}" style="color:#1a5fb4;text-decoration:none;font-weight:bold;">{escape(l['title'])}</a><br>
   <span style="color:#666;font-size:12px;">{district_str} · {detail_str} · đăng {posted_str}</span>{warning_html}
