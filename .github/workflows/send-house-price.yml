@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  models: read  # required for actions/ai-inference
 
 jobs:
   send:
@@ -51,41 +50,28 @@ jobs:
           TIMEZONE: "Asia/Ho_Chi_Minh"
         run: python hanoi_house_price_emailer.py prepare
 
-      # Phase 2: AI review of listings.json via GitHub's Copilot-backed
-      # inference action - needs COPILOT_PAT (a Personal Access Token with
-      # "Copilot Requests" permission) added as a repo secret.
-      # See: https://github.com/actions/ai-inference
-      # IMPORTANT: Copilot CLI must be installed BEFORE this step, or the
-      # action silently falls back to the (now-retired, July 30 2026)
-      # legacy GitHub Models endpoint and fails with a 410 error.
+      # Phase 2: AI review of listings.json via Copilot CLI, called
+      # directly (NOT via actions/ai-inference - that action proved
+      # unreliable: @v1 is stale/hardcodes the retired GitHub Models
+      # endpoint, and @main gave inconsistent results). This mirrors
+      # GitHub's own documented direct-CLI usage instead.
+      # See: https://docs.github.com/copilot/how-tos/copilot-cli/use-copilot-cli-in-actions
       - name: Set up Node.js
         uses: actions/setup-node@v6
 
       - name: Install Copilot CLI
         run: npm install -g @github/copilot
 
-      # IMPORTANT: pinned to @main, not @v1 - the v1 release tag is stale
-      # and still hardcodes the old (retired July 30 2026) GitHub Models
-      # endpoint; the Copilot-only rewrite only exists on main as of this
-      # writing. Worth switching to a proper version tag once one exists
-      # that includes the Copilot support (check
-      # https://github.com/actions/ai-inference/releases).
       - name: AI review listings
         id: ai_review
         if: hashFiles('email/ai_prompt.txt') != ''
-        uses: actions/ai-inference@main
-        with:
-          prompt-file: email/ai_prompt.txt
-          model: gpt-4.1
+        continue-on-error: true  # fails open - build step handles a missing/bad response gracefully
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_PAT }}
-
-      - name: Save AI review response
-        if: steps.ai_review.outcome == 'success'
         run: |
-          cat > email/ai_response.json << 'AI_RESPONSE_EOF'
-          ${{ steps.ai_review.outputs.response }}
-          AI_RESPONSE_EOF
+          copilot --yolo --no-color -p "$(cat email/ai_prompt.txt)" > email/ai_response.json
+          echo "--- raw Copilot CLI output (for debugging) ---"
+          cat email/ai_response.json
 
       # Phase 3 (new): apply the AI verdict (if ai_response.json exists -
       # if the AI step failed/was skipped, build falls back to the
