@@ -64,10 +64,16 @@ jobs:
       - name: Install Copilot CLI
         run: npm install -g @github/copilot
 
+      # IMPORTANT: pinned to @main, not @v1 - the v1 release tag is stale
+      # and still hardcodes the old (retired July 30 2026) GitHub Models
+      # endpoint; the Copilot-only rewrite only exists on main as of this
+      # writing. Worth switching to a proper version tag once one exists
+      # that includes the Copilot support (check
+      # https://github.com/actions/ai-inference/releases).
       - name: AI review listings
         id: ai_review
         if: hashFiles('email/ai_prompt.txt') != ''
-        uses: actions/ai-inference@v1
+        uses: actions/ai-inference@main
         with:
           prompt-file: email/ai_prompt.txt
           model: gpt-4.1
