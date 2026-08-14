@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  models: read  # required for actions/ai-inference
 
 jobs:
   send:
@@ -42,11 +43,43 @@ jobs:
             echo "No previous state found - first run."
           fi
 
-      - name: Generate email
+      # Phase 1 (was "generate"): fetch listings, apply rule-based filters,
+      # write email/listings.json + email/ai_prompt.txt
+      - name: Prepare listings
         env:
           SEND_ONLY_ON_CHANGE: "false"
           TIMEZONE: "Asia/Ho_Chi_Minh"
-        run: python hanoi_house_price_emailer.py generate
+        run: python hanoi_house_price_emailer.py prepare
+
+      # Phase 2: AI review of listings.json via GitHub's Copilot-backed
+      # inference action - needs COPILOT_PAT (a Personal Access Token with
+      # "Copilot Requests" permission) added as a repo secret.
+      # See: https://github.com/actions/ai-inference
+      - name: AI review listings
+        id: ai_review
+        if: hashFiles('email/ai_prompt.txt') != ''
+        uses: actions/ai-inference@v1
+        with:
+          prompt-file: email/ai_prompt.txt
+          model: gpt-4.1
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_PAT }}
+
+      - name: Save AI review response
+        if: steps.ai_review.outcome == 'success'
+        run: |
+          cat > email/ai_response.json << 'AI_RESPONSE_EOF'
+          ${{ steps.ai_review.outputs.response }}
+          AI_RESPONSE_EOF
+
+      # Phase 3 (new): apply the AI verdict (if ai_response.json exists -
+      # if the AI step failed/was skipped, build falls back to the
+      # rule-based filters alone rather than blocking the email)
+      - name: Build email
+        env:
+          SEND_ONLY_ON_CHANGE: "false"
+          TIMEZONE: "Asia/Ho_Chi_Minh"
+        run: python hanoi_house_price_emailer.py build
 
       - name: Send email
         env:
