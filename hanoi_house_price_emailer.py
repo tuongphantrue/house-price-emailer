@@ -76,6 +76,7 @@ import smtplib
 import ssl
 import sys
 import time
+import unicodedata
 from datetime import datetime, timedelta, date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -420,7 +421,16 @@ def split_listing_chunks(html):
 
 def parse_listing_chunk(lid, href, chunk_html, category):
     soup = BeautifulSoup(chunk_html, "html.parser")
-    text = re.sub(r"\s+", " ", soup.get_text(" ")).strip()
+    # Normalize to NFC (composed accents) before any regex matching below -
+    # all the Vietnamese regex literals in this file are written in NFC,
+    # but scraped HTML can use NFD (decomposed accents, e.g. "tỷ" as
+    # separate base-letter + combining-mark codepoints) which looks
+    # identical when displayed but silently fails to match an NFC regex.
+    # This was a real, previously-unfixed gap (an earlier version of this
+    # script normalized text; this rewrite didn't carry that over) and is
+    # the likely explanation for at least one observed title/price
+    # mismatch bug that a same-looking test string couldn't reproduce.
+    text = unicodedata.normalize("NFC", re.sub(r"\s+", " ", soup.get_text(" ")).strip())
 
     # District-scoped Hanoi URLs turned out to occasionally include
     # cross-city content anyway (spotted a real Quận Bình Thạnh, TPHCM
@@ -441,6 +451,8 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     if (not title or len(title) < 3) and soup.find("img", alt=True):
         title = soup.find("img", alt=True)["alt"]
         title = re.sub(r"^Hình ảnh\s+", "", title).strip()
+    if title:
+        title = unicodedata.normalize("NFC", title)
 
     area_m = AREA_RE.search(text)
     pn_m = PN_RE.search(text)
