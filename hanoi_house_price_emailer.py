@@ -789,17 +789,43 @@ def apply_ai_verdicts(listings):
     with open(AI_RESPONSE_PATH, encoding="utf-8") as f:
         raw = f.read().strip()
 
+    if not raw:
+        print("  AI response file is empty - skipping AI review step for this run.", file=sys.stderr)
+        return listings
+
     # Strip markdown code fences if the model wrapped its JSON in them
     # despite being asked not to - common enough to guard against.
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
 
+    verdicts = None
     try:
-        verdicts = json.loads(raw)
-        verdict_by_id = {v["id"]: v for v in verdicts if isinstance(v, dict) and "id" in v}
-    except (json.JSONDecodeError, TypeError, KeyError) as e:
-        print(f"  WARNING: could not parse AI response as JSON ({e}) - skipping AI "
+        verdicts = json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    if verdicts is None:
+        # Calling Copilot CLI directly (not through a wrapper action) means
+        # the raw output can have banner/log text before or after the
+        # actual JSON - try pulling out the first [...] array found
+        # anywhere in the text as a fallback before giving up entirely.
+        m = re.search(r"\[.*\]", cleaned, re.DOTALL)
+        if m:
+            try:
+                verdicts = json.loads(m.group(0))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    if verdicts is None:
+        print(f"  WARNING: could not parse AI response as JSON - skipping AI "
               f"review step for this run. Raw response (first 300 chars): {raw[:300]!r}",
               file=sys.stderr)
+        return listings
+
+    try:
+        verdict_by_id = {v["id"]: v for v in verdicts if isinstance(v, dict) and "id" in v}
+    except (TypeError, KeyError):
+        print(f"  WARNING: AI response parsed as JSON but wasn't the expected list-of-objects "
+              f"shape - skipping AI review step for this run.", file=sys.stderr)
         return listings
 
     rejected = []
