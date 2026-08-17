@@ -689,12 +689,30 @@ def build_listing_card_html(l):
 
     images = l.get("images") or ([l["image_url"]] if l.get("image_url") else [])
     if images:
-        img_html = "".join(
-            f'<img src="{escape(img)}" alt="" '
-            f'style="max-width:100%;height:auto;display:block;border-radius:10px 10px 0 0;margin-bottom:2px;">'
-            for img in images
-        )
-        image_row = f'<tr><td colspan="2" style="padding:0;"><a href="{escape(l["url"])}" style="display:block;">{img_html}</a></td></tr>'
+        if len(images) == 1:
+            img_html = (
+                f'<img src="{escape(images[0])}" alt="" '
+                f'style="max-width:100%;height:auto;display:block;border-radius:10px 10px 0 0;">'
+            )
+            image_row = f'<tr><td colspan="2" style="padding:0;"><a href="{escape(l["url"])}" style="display:block;">{img_html}</a></td></tr>'
+        else:
+            # Horizontally-scrollable strip for multiple photos - fixed
+            # height with auto width per image keeps each photo's natural
+            # aspect ratio (no cropping) while letting them sit side by
+            # side and scroll instead of stacking full-width top to
+            # bottom. overflow-x:auto works in Gmail web/app but degrades
+            # in some clients (e.g. Outlook desktop) to a static row -
+            # not catastrophic, just loses the scroll interaction there.
+            thumbs = "".join(
+                f'<a href="{escape(l["url"])}"><img src="{escape(img)}" alt="" '
+                f'style="height:180px;width:auto;display:inline-block;border-radius:8px;'
+                f'margin-right:8px;vertical-align:top;"></a>'
+                for img in images
+            )
+            image_row = f"""
+<tr><td colspan="2" style="padding:12px 12px 0;">
+  <div style="overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;">{thumbs}</div>
+</td></tr>"""
     else:
         image_row = ""
 
