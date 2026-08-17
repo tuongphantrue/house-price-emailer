@@ -108,6 +108,12 @@ ALLOW_INSECURE_SSL_FALLBACK = os.environ.get("ALLOW_INSECURE_SSL_FALLBACK", "fal
 # by spot-checking the live page directly. Filtered out rather than shown
 # as fact. Lower this if you genuinely want to see sub-threshold listings
 # (e.g. very small/rural huyện listings can legitimately be cheaper).
+# Set DEBUG_DUMP_CHUNKS=true to print the raw HTML of the first few
+# listing chunks per district to stderr - useful for diagnosing parsing
+# issues (like missing images) against the real markup, which hasn't been
+# directly inspectable from outside a live run.
+DEBUG_DUMP_CHUNKS = os.environ.get("DEBUG_DUMP_CHUNKS", "false").lower() == "true"
+
 MIN_PLAUSIBLE_PRICE_TRIEU = float(os.environ.get("MIN_PLAUSIBLE_PRICE_TRIEU", "300"))
 # Price ceiling in triệu đồng (1 tỷ = 1000 triệu) - hardcoded to 5 tỷ VND.
 # Listings with no confirmed price (unparsed, or "Thỏa thuận"/negotiable)
@@ -579,6 +585,11 @@ def fetch_category_listings(category, age_cutoff=None):
                     continue
                 seen_ids.add(lid)
                 new_here += 1  # counts as "new" for pagination-progress purposes even if dropped below
+
+                if DEBUG_DUMP_CHUNKS and len(listings) < 3:
+                    print(f"\n=== DEBUG raw chunk HTML for listing {lid} ===\n{chunk_html}\n=== END DEBUG ===\n",
+                          file=sys.stderr)
+
                 parsed = parse_listing_chunk(lid, href, chunk_html, category)
                 if parsed is None:
                     dropped_excluded += 1
@@ -652,7 +663,7 @@ def fetch_all_listings():
     return all_listings
 
 
-def build_listing_row_html(l):
+def build_listing_card_html(l):
     price_str = escape(format_price(l["price_trieu"]))
     details = []
     if l["area"]:
@@ -668,71 +679,85 @@ def build_listing_row_html(l):
     warnings = flag_suspicious(l)
     warning_html = ""
     if warnings:
-        warning_text = escape("⚠️ Cần kiểm tra: " + "; ".join(warnings))
-        warning_html = f'<br><span style="color:#b45309;font-size:12px;font-weight:bold;">{warning_text}</span>'
+        warning_text = escape("Cần kiểm tra: " + "; ".join(warnings))
+        warning_html = f"""
+<tr><td colspan="2" style="padding:0 20px 16px;">
+  <table role="presentation" cellpadding="0" cellspacing="0" style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;width:100%;">
+    <tr><td style="padding:8px 12px;font-size:12px;color:#92400e;font-weight:600;">⚠️ {warning_text}</td></tr>
+  </table>
+</td></tr>"""
 
-    if l.get("image_url"):
-        thumb_html = (
-            f'<img src="{escape(l["image_url"])}" alt="" width="64" height="64" '
-            f'style="width:64px;height:64px;object-fit:cover;border-radius:4px;display:block;">'
+    images = l.get("images") or ([l["image_url"]] if l.get("image_url") else [])
+    if images:
+        img_html = "".join(
+            f'<img src="{escape(img)}" alt="" '
+            f'style="max-width:100%;height:auto;display:block;border-radius:10px 10px 0 0;margin-bottom:2px;">'
+            for img in images
         )
+        image_row = f'<tr><td colspan="2" style="padding:0;"><a href="{escape(l["url"])}" style="display:block;">{img_html}</a></td></tr>'
     else:
-        thumb_html = '<div style="width:64px;height:64px;background:#eee;border-radius:4px;"></div>'
+        image_row = ""
 
     return f"""
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:16px;overflow:hidden;">
+{image_row}
 <tr>
-<td style="padding:8px 4px 8px 12px;border-bottom:1px solid #eee;width:64px;">
-  <a href="{escape(l['url'])}">{thumb_html}</a>
-</td>
-<td style="padding:8px 12px;border-bottom:1px solid #eee;">
-  <a href="{escape(l['url'])}" style="color:#1a5fb4;text-decoration:none;font-weight:bold;">{escape(l['title'])}</a><br>
-  <span style="color:#666;font-size:12px;">{district_str} · {detail_str} · đăng {posted_str}</span>{warning_html}
-</td>
-<td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap;font-weight:bold;">{price_str}</td>
-</tr>"""
-
-
-def build_district_section_html(district, district_listings):
-    district_label = escape(district) if district else "Không rõ quận/huyện"
-    rows = "\n".join(build_listing_row_html(l) for l in district_listings)
-    return f"""
-<h3 style="color:#333;font-size:15px;margin-top:18px;margin-bottom:4px;">{district_label} ({len(district_listings)} tin)</h3>
-<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:640px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-<tbody>
-{rows}
-</tbody>
+  <td style="padding:16px 8px 4px 20px;vertical-align:top;">
+    <a href="{escape(l['url'])}" style="color:#111827;text-decoration:none;font-weight:700;font-size:15px;line-height:1.4;">{escape(l['title'])}</a><br>
+    <span style="color:#6b7280;font-size:13px;line-height:1.6;">{district_str} · {detail_str}</span><br>
+    <span style="color:#9ca3af;font-size:12px;">đăng {posted_str}</span>
+  </td>
+  <td style="padding:16px 20px 4px 8px;text-align:right;white-space:nowrap;vertical-align:top;">
+    <span style="display:inline-block;background:#ecfdf5;color:#047857;font-weight:800;font-size:15px;padding:6px 12px;border-radius:999px;">{price_str}</span>
+  </td>
+</tr>
+{warning_html}
+<tr><td colspan="2" style="height:12px;"></td></tr>
 </table>"""
 
 
 def build_html(listings, timestamp):
     if not listings:
-        body = "<p>Không lấy được tin đăng nào kỳ này. Kiểm tra trực tiếp nguồn hoặc xem log để biết chi tiết.</p>"
+        body = """
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;">
+<tr><td style="padding:24px;color:#6b7280;font-size:14px;">Không lấy được tin đăng nào kỳ này. Kiểm tra trực tiếp nguồn hoặc xem log để biết chi tiết.</td></tr>
+</table>"""
     else:
         sections = []
         for category, _ in CATEGORIES:
             cat_listings = [l for l in listings if l["category"] == category]
             if not cat_listings:
                 continue
-            rows = "\n".join(build_listing_row_html(l) for l in cat_listings)
+            cards = "\n".join(build_listing_card_html(l) for l in cat_listings)
             sections.append(f"""
-<h2 style="color:#1a5fb4;font-size:18px;margin-top:28px;">{escape(category)} ({len(cat_listings)} tin) - sắp xếp theo giá tăng dần</h2>
-<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:640px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-<tbody>
-{rows}
-</tbody>
-</table>""")
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin:28px 0 14px;">
+<tr>
+  <td style="background:#eef2ff;color:#4338ca;font-weight:700;font-size:13px;padding:6px 14px;border-radius:999px;">{escape(category)}</td>
+  <td style="padding-left:10px;color:#9ca3af;font-size:12px;">{len(cat_listings)} tin · giá tăng dần</td>
+</tr>
+</table>
+{cards}""")
         body = "\n".join(sections)
 
     return f"""\
 <html>
-<body style="margin:0; padding:20px; background:#f4f4f4; font-family:Arial,Helvetica,sans-serif;">
-<h1 style="color:#1a5fb4;">Tin đăng bán nhà & căn hộ Hà Nội</h1>
-<p style="color:#555;">Cập nhật {escape(timestamp)} · {len(listings)} tin đăng</p>
+<body style="margin:0; padding:0; background:#f3f4f6; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#f3f4f6;padding:24px 12px;">
+<tr><td align="center">
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:640px;">
+<tr><td style="padding-bottom:4px;">
+  <h1 style="margin:0;color:#111827;font-size:22px;font-weight:800;letter-spacing:-0.3px;">Nhà & căn hộ Hà Nội</h1>
+  <p style="margin:6px 0 0;color:#9ca3af;font-size:13px;">Cập nhật {escape(timestamp)} · {len(listings)} tin đăng</p>
+</td></tr>
+<tr><td>
 {body}
-<p style="color:#999; font-size:12px; margin-top:24px;">
-Nguồn: từng tin đăng thực tế trên Mogi.vn (không phải giá trung bình) ·
-Email tự động, chỉ mang tính tham khảo, không phải lời khuyên đầu tư.
-</p>
+</td></tr>
+<tr><td style="padding:20px 4px 0;color:#9ca3af;font-size:11px;line-height:1.6;">
+Nguồn: từng tin đăng thực tế trên Mogi.vn (không phải giá trung bình) · Email tự động, chỉ mang tính tham khảo, không phải lời khuyên đầu tư.
+</td></tr>
+</table>
+</td></tr>
+</table>
 </body>
 </html>"""
 
@@ -984,10 +1009,52 @@ def cmd_prepare():
           f"'build'.")
 
 
+OG_IMAGE_RE = re.compile(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', re.IGNORECASE)
+# Broad scan (not tied to any specific DOM structure) for any Mogi CDN
+# image URL appearing anywhere in the page - catches gallery photos even
+# if they're loaded into the DOM via JavaScript after page load (a strict
+# <img src=...> scrape would miss those, but if the URLs are embedded
+# anywhere in the raw HTML/JS - e.g. in a hydration data blob - this
+# still finds them as plain text).
+GALLERY_IMAGE_RE = re.compile(r'https://cloud\.mogi\.vn/images/[^\s"\'<>\\]+\.(?:jpg|jpeg|png|webp)', re.IGNORECASE)
+MAX_IMAGES_PER_LISTING = 6
+DETAIL_PAGE_REQUEST_DELAY = 0.5
+
+
+def fetch_listing_images(url):
+    """Fetches a listing's own detail page and returns a list of image
+    URLs (og:image first - confirmed reliably present on every listing -
+    followed by any other gallery photos found via the broad CDN-URL
+    scan, deduplicated, capped at MAX_IMAGES_PER_LISTING). Returns an
+    empty list on any fetch error rather than raising, since a missing
+    gallery shouldn't block the whole email.
+    """
+    try:
+        html = fetch_page(url)
+    except requests.RequestException as e:
+        print(f"    failed to fetch detail page for images ({url}): {e}", file=sys.stderr)
+        return []
+
+    images = []
+    og_match = OG_IMAGE_RE.search(html)
+    if og_match:
+        images.append(og_match.group(1))
+
+    for m in GALLERY_IMAGE_RE.finditer(html):
+        img_url = m.group(0)
+        if img_url not in images:
+            images.append(img_url)
+        if len(images) >= MAX_IMAGES_PER_LISTING:
+            break
+
+    return images
+
+
 def cmd_build():
     """Phase 2: read listings.json, apply the AI review verdict (if
     ai_response.json is present - written by the AI review workflow step),
-    apply flag_suspicious() to whatever remains, and write the final email.
+    apply flag_suspicious() to whatever remains, fetch each remaining
+    listing's photo gallery, and write the final email.
     """
     if not os.path.exists(LISTINGS_JSON_PATH):
         print(f"{LISTINGS_JSON_PATH} not found - run 'prepare' first.", file=sys.stderr)
@@ -997,6 +1064,16 @@ def cmd_build():
 
     listings = apply_ai_verdicts(listings)
     print(f"Total after AI review: {len(listings)} listing(s).")
+
+    print(f"Fetching photo galleries for {len(listings)} listing(s) (up to "
+          f"{MAX_IMAGES_PER_LISTING} each) ...")
+    for i, l in enumerate(listings):
+        if i > 0:
+            time.sleep(DETAIL_PAGE_REQUEST_DELAY)
+        l["images"] = fetch_listing_images(l["url"])
+    total_images = sum(len(l["images"]) for l in listings)
+    no_image_count = sum(1 for l in listings if not l["images"])
+    print(f"  Got {total_images} image(s) total ({no_image_count} listing(s) with none found).")
 
     flagged = [(l, flag_suspicious(l)) for l in listings]
     flagged = [(l, w) for l, w in flagged if w]
