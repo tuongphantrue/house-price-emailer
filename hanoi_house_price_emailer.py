@@ -178,6 +178,14 @@ AREA_RE = re.compile(r"([\d][\d.,]*)\s*m\s*2")
 PN_RE = re.compile(r"(\d+)\s*PN")
 WC_RE = re.compile(r"(\d+)\s*WC")
 DISTRICT_RE = re.compile(r"((?:Quận|Huyện|Thị Xã)(?:\s+\S+){1,3}),\s*Hà Nội")
+# Full street-level address, confirmed against a real listing page's
+# structure: "<street>, Phường/Xã <ward>, Quận/Huyện/Thị Xã <district>, Hà
+# Nội". Used for geocoding (see geocode_address) - falls back to just the
+# district (less precise) if this doesn't match, since address wording
+# can vary and this wasn't verified across many real listings.
+FULL_ADDRESS_RE = re.compile(
+    r"([^,<]+,\s*(?:Phường|Xã)\s+[^,<]+,\s*(?:Quận|Huyện|Thị Xã)\s+[^,<]+,\s*Hà Nội)"
+)
 OTHER_CITY_RE = re.compile(
     r"TPHCM|TP\.?\s*HCM|Tp\.?\s*Hồ Chí Minh|Thành phố Hồ Chí Minh|"
     r"Đà Nẵng|Hải Phòng|Cần Thơ|Bình Dương|Đồng Nai|Bà Rịa|Nha Trang|Khánh Hòa",
@@ -466,6 +474,8 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     district_m = DISTRICT_RE.search(text)
     if not district_m:
         return None
+    full_address_m = FULL_ADDRESS_RE.search(text)
+    address = full_address_m.group(1).strip() if full_address_m else f"{district_m.group(1).strip()}, Hà Nội"
     # Price extraction has to reconcile two real, conflicting listing
     # patterns found in production:
     #   (a) price ONLY appears within the title text itself (e.g. "...Giá
@@ -522,6 +532,7 @@ def parse_listing_chunk(lid, href, chunk_html, category):
         "url": url,
         "image_url": image_url,
         "district": district_m.group(1).strip() if district_m else None,
+        "address": address,
         "area": area_m.group(1) if area_m else None,
         "bedrooms": pn_m.group(1) if pn_m else None,
         "bathrooms": wc_m.group(1) if wc_m else None,
@@ -692,6 +703,10 @@ def build_listing_card_html(l):
     detail_str = " · ".join(details) if details else "—"
     district_str = escape(l["district"]) if l["district"] else "Không rõ quận/huyện"
     posted_str = escape(l["posted_label"]) if l["posted_label"] else "?"
+    if l.get("lat") is not None:
+        map_link = f"https://www.google.com/maps?q={l['lat']},{l['lon']}"
+    else:
+        map_link = f"https://www.google.com/maps/search/{requests.utils.quote(l.get('address') or l.get('district') or 'Hà Nội')}"
 
     warnings = flag_suspicious(l)
     warning_html = ""
@@ -740,7 +755,7 @@ def build_listing_card_html(l):
   <td colspan="2" style="padding:16px 20px 4px;vertical-align:top;">
     <a href="{escape(l['url'])}" style="color:#111827;text-decoration:none;font-weight:700;font-size:15px;line-height:1.4;">{escape(l['title'])}</a><br>
     <span style="color:#6b7280;font-size:13px;line-height:1.6;">{district_str} · {detail_str}</span><br>
-    <span style="color:#9ca3af;font-size:12px;">đăng {posted_str}</span>
+    <span style="color:#9ca3af;font-size:12px;">đăng {posted_str} · <a href="{escape(map_link)}" style="color:#1d4ed8;">📍 Xem vị trí</a></span>
   </td>
 </tr>
 <tr>
@@ -805,6 +820,42 @@ def build_listing_card_page_html(l):
 
 
 def build_github_page_html(listings, timestamp):
+    geocoded = [l for l in listings if l.get("lat") is not None]
+    map_markers_json = json.dumps([
+        {
+            "lat": l["lat"], "lon": l["lon"],
+            "title": l["title"], "price": format_price(l["price_trieu"]),
+            "url": l["url"], "category": l["category"],
+        }
+        for l in geocoded
+    ], ensure_ascii=False)
+    map_section = ""
+    if geocoded:
+        map_section = f"""
+<section>
+  <h2><span class="pill" style="background:#dbeafe;color:#1e40af;">Bản đồ</span> <span class="muted">{len(geocoded)}/{len(listings)} tin có vị trí</span></h2>
+  <div id="map"></div>
+</section>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const markers = {map_markers_json};
+  const map = L.map('map');
+  L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 19,
+  }}).addTo(map);
+  const bounds = [];
+  markers.forEach(m => {{
+    const marker = L.marker([m.lat, m.lon]).addTo(map);
+    marker.bindPopup(
+      '<strong>' + m.title.replace(/</g, '&lt;') + '</strong><br>' +
+      m.price + '<br><a href="' + m.url + '" target="_blank" rel="noopener">Xem tin</a>'
+    );
+    bounds.push([m.lat, m.lon]);
+  }});
+  if (bounds.length > 0) map.fitBounds(bounds, {{padding: [30, 30]}});
+</script>"""
+
     sections = []
     for category, _ in CATEGORIES:
         cat_listings = [l for l in listings if l["category"] == category]
@@ -816,7 +867,7 @@ def build_github_page_html(listings, timestamp):
   <h2><span class="pill">{escape(category)}</span> <span class="muted">{len(cat_listings)} tin · giá tăng dần</span></h2>
   <div class="grid">{cards}</div>
 </section>""")
-    body = "\n".join(sections) if sections else '<p class="muted">Không có tin đăng nào kỳ này.</p>'
+    body = map_section + "\n".join(sections) if sections else '<p class="muted">Không có tin đăng nào kỳ này.</p>'
 
     return f"""<!DOCTYPE html>
 <html lang="vi">
@@ -825,6 +876,7 @@ def build_github_page_html(listings, timestamp):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Nhà & căn hộ Hà Nội</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
   :root {{
     --bg:#f7f7f8; --surface:#ffffff; --border:#e4e4e7; --text:#18181b;
@@ -834,6 +886,7 @@ def build_github_page_html(listings, timestamp):
   @media (prefers-color-scheme: dark) {{
     :root {{ --bg:#0b0b0d; --surface:#17171a; --border:#2a2a2e; --text:#f4f4f5; --muted:#a1a1aa; --faint:#71717a; }}
   }}
+  #map {{ height:420px; border-radius:12px; border:1px solid var(--border); z-index:0; }}
   * {{ box-sizing:border-box; }}
   body {{
     margin:0; background:var(--bg); color:var(--text);
@@ -1201,6 +1254,45 @@ MAX_IMAGES_PER_LISTING = 6
 DETAIL_PAGE_REQUEST_DELAY = 0.5
 
 
+GEOCODE_REQUEST_DELAY = 1.0  # Nominatim usage policy requires max 1 req/sec
+GEOCODE_HEADERS = {
+    # Nominatim's usage policy requires a real identifying User-Agent
+    # (not a browser UA) - see https://operations.osmfoundation.org/policies/nominatim/
+    "User-Agent": "hanoi-house-price-emailer/1.0 (personal hobby project)"
+}
+_geocode_cache = {}
+
+
+def geocode_address(address):
+    """Geocodes a Vietnamese address to (lat, lon) using OpenStreetMap's
+    free Nominatim service - no API key needed. Returns None on any
+    failure (no match, network error, rate limit) rather than raising,
+    since a missing pin for one listing shouldn't break the whole map.
+    Not verified against a real GitHub Actions run yet.
+    """
+    if address in _geocode_cache:
+        return _geocode_cache[address]
+    try:
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": address, "format": "json", "limit": 1, "countrycodes": "vn"},
+            headers=GEOCODE_HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        results = resp.json()
+        if not results:
+            _geocode_cache[address] = None
+            return None
+        latlon = (float(results[0]["lat"]), float(results[0]["lon"]))
+        _geocode_cache[address] = latlon
+        return latlon
+    except (requests.RequestException, ValueError, KeyError, IndexError) as e:
+        print(f"    geocoding failed for {address!r}: {e}", file=sys.stderr)
+        _geocode_cache[address] = None
+        return None
+
+
 def fetch_listing_images(url):
     """Fetches a listing's own detail page and returns a list of image
     URLs (og:image first - confirmed reliably present on every listing -
@@ -1254,6 +1346,15 @@ def cmd_build():
     total_images = sum(len(l["images"]) for l in listings)
     no_image_count = sum(1 for l in listings if not l["images"])
     print(f"  Got {total_images} image(s) total ({no_image_count} listing(s) with none found).")
+
+    print(f"Geocoding {len(listings)} listing(s) via Nominatim (free, ~1 req/sec) ...")
+    for i, l in enumerate(listings):
+        if i > 0:
+            time.sleep(GEOCODE_REQUEST_DELAY)
+        latlon = geocode_address(l["address"])
+        l["lat"], l["lon"] = latlon if latlon else (None, None)
+    geocoded_count = sum(1 for l in listings if l["lat"] is not None)
+    print(f"  Geocoded {geocoded_count}/{len(listings)} listing(s).")
 
     flagged = [(l, flag_suspicious(l)) for l in listings]
     flagged = [(l, w) for l, w in flagged if w]
