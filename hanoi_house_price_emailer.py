@@ -717,7 +717,7 @@ def build_listing_card_html(l):
         image_row = ""
 
     return f"""
-<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:16px;overflow:hidden;">
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="email-card" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:16px;overflow:hidden;">
 {image_row}
 <tr>
   <td style="padding:16px 8px 4px 20px;vertical-align:top;">
@@ -726,7 +726,7 @@ def build_listing_card_html(l):
     <span style="color:#9ca3af;font-size:12px;">đăng {posted_str}</span>
   </td>
   <td style="padding:16px 20px 4px 8px;text-align:right;white-space:nowrap;vertical-align:top;">
-    <span style="display:inline-block;background:#ecfdf5;color:#047857;font-weight:800;font-size:15px;padding:6px 12px;border-radius:999px;">{price_str}</span>
+    <span style="display:inline-block;background:#ecfdf5;color:#047857;font-weight:800;font-size:15px;padding:6px 12px;border-radius:999px;font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Menlo,monospace;font-variant-numeric:tabular-nums;">{price_str}</span>
   </td>
 </tr>
 {warning_html}
@@ -734,10 +734,139 @@ def build_listing_card_html(l):
 </table>"""
 
 
+GITHUB_PAGE_PATH = "docs/index.html"
+# Set this to your actual Pages URL once GitHub Pages is enabled for this
+# repo (Settings -> Pages -> Source: main branch, /docs folder) - same
+# setup as tuongphantrue/currency-rate-emailer. Standard project-page URL
+# pattern: https://<username>.github.io/<repo>/
+GITHUB_PAGE_URL = os.environ.get("GITHUB_PAGE_URL", "https://tuongphantrue.github.io/house-price-emailer/")
+
+
+def build_listing_card_page_html(l):
+    """Same content as build_listing_card_html, but as a real webpage
+    card (CSS Grid/hover states available - not constrained to
+    table-based email-safe markup)."""
+    price_str = escape(format_price(l["price_trieu"]))
+    details = []
+    if l["area"]:
+        details.append(f"{escape(l['area'])} m²")
+    if l["bedrooms"]:
+        details.append(f"{escape(l['bedrooms'])} PN")
+    if l["bathrooms"]:
+        details.append(f"{escape(l['bathrooms'])} WC")
+    detail_str = " · ".join(details) if details else "—"
+    district_str = escape(l["district"]) if l["district"] else "Không rõ quận/huyện"
+    posted_str = escape(l["posted_label"]) if l["posted_label"] else "?"
+
+    warnings = flag_suspicious(l)
+    warning_html = ""
+    if warnings:
+        warning_text = escape("Cần kiểm tra: " + "; ".join(warnings))
+        warning_html = f'<div class="warn">⚠️ {warning_text}</div>'
+
+    images = l.get("images") or ([l["image_url"]] if l.get("image_url") else [])
+    if images:
+        gallery_html = "".join(
+            f'<img src="{escape(img)}" alt="" loading="lazy">' for img in images
+        )
+        gallery_html = f'<div class="gallery">{gallery_html}</div>'
+    else:
+        gallery_html = '<div class="gallery gallery-empty"></div>'
+
+    return f"""
+<a class="card" href="{escape(l['url'])}" target="_blank" rel="noopener">
+  {gallery_html}
+  <div class="card-body">
+    <div class="card-title">{escape(l['title'])}</div>
+    <div class="card-meta">{district_str} · {detail_str}</div>
+    <div class="card-meta faint">đăng {posted_str}</div>
+    {warning_html}
+    <div class="price">{price_str}</div>
+  </div>
+</a>"""
+
+
+def build_github_page_html(listings, timestamp):
+    sections = []
+    for category, _ in CATEGORIES:
+        cat_listings = [l for l in listings if l["category"] == category]
+        if not cat_listings:
+            continue
+        cards = "\n".join(build_listing_card_page_html(l) for l in cat_listings)
+        sections.append(f"""
+<section>
+  <h2><span class="pill">{escape(category)}</span> <span class="muted">{len(cat_listings)} tin · giá tăng dần</span></h2>
+  <div class="grid">{cards}</div>
+</section>""")
+    body = "\n".join(sections) if sections else '<p class="muted">Không có tin đăng nào kỳ này.</p>'
+
+    return f"""<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Nhà & căn hộ Hà Nội</title>
+<style>
+  :root {{
+    --bg:#f7f7f8; --surface:#ffffff; --border:#e4e4e7; --text:#18181b;
+    --muted:#71717a; --faint:#a1a1aa; --accent:#a21caf; --accent-soft:#fae8ff;
+    --accent-text:#86198f; --positive:#16a34a; --positive-soft:#ecfdf5; --warn-soft:#fffbeb; --warn-text:#92400e;
+  }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{ --bg:#0b0b0d; --surface:#17171a; --border:#2a2a2e; --text:#f4f4f5; --muted:#a1a1aa; --faint:#71717a; }}
+  }}
+  * {{ box-sizing:border-box; }}
+  body {{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }}
+  .wrap {{ max-width:1100px; margin:0 auto; padding:32px 20px 60px; }}
+  h1 {{ font-size:24px; font-weight:800; letter-spacing:-0.3px; margin:0; }}
+  .subtitle {{ color:var(--muted); font-size:13px; margin:6px 0 32px; }}
+  h2 {{ font-size:15px; margin:0 0 14px; display:flex; align-items:center; gap:10px; }}
+  .pill {{ background:var(--accent-soft); color:var(--accent-text); font-weight:700; padding:5px 12px; border-radius:999px; }}
+  .muted {{ color:var(--muted); font-weight:400; font-size:12px; }}
+  section {{ margin-bottom:36px; }}
+  .grid {{ display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:16px; }}
+  .card {{
+    display:block; background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    overflow:hidden; text-decoration:none; color:inherit; transition:transform .15s ease, box-shadow .15s ease;
+  }}
+  .card:hover {{ transform:translateY(-2px); box-shadow:0 8px 24px rgba(0,0,0,.08); }}
+  .gallery {{ display:flex; overflow-x:auto; scroll-snap-type:x mandatory; background:var(--border); }}
+  .gallery img {{ height:180px; width:100%; object-fit:cover; scroll-snap-align:start; flex:0 0 100%; }}
+  .gallery-empty {{ height:120px; }}
+  .card-body {{ padding:14px 16px 16px; }}
+  .card-title {{ font-weight:700; font-size:14px; line-height:1.4; margin-bottom:6px; }}
+  .card-meta {{ color:var(--muted); font-size:12.5px; line-height:1.6; }}
+  .card-meta.faint {{ color:var(--faint); font-size:11.5px; }}
+  .warn {{ background:var(--warn-soft); color:var(--warn-text); font-size:11.5px; font-weight:600; padding:6px 10px; border-radius:6px; margin-top:8px; }}
+  .price {{
+    margin-top:10px; display:inline-block; background:var(--positive-soft); color:var(--positive);
+    font-weight:800; font-size:15px; padding:6px 12px; border-radius:999px;
+    font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Menlo,monospace; font-variant-numeric:tabular-nums;
+  }}
+  footer {{ color:var(--faint); font-size:11.5px; margin-top:40px; line-height:1.7; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Nhà & căn hộ Hà Nội</h1>
+  <div class="subtitle">Cập nhật {escape(timestamp)} · {len(listings)} tin đăng</div>
+  {body}
+  <footer>
+    Nguồn: từng tin đăng thực tế trên Mogi.vn (không phải giá trung bình) · Trang tự động, chỉ mang tính tham khảo, không phải lời khuyên đầu tư.
+  </footer>
+</div>
+</body>
+</html>"""
+
+
 def build_html(listings, timestamp):
     if not listings:
         body = """
-<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;">
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="email-card" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;">
 <tr><td style="padding:24px;color:#6b7280;font-size:14px;">Không lấy được tin đăng nào kỳ này. Kiểm tra trực tiếp nguồn hoặc xem log để biết chi tiết.</td></tr>
 </table>"""
     else:
@@ -750,7 +879,7 @@ def build_html(listings, timestamp):
             sections.append(f"""
 <table role="presentation" cellpadding="0" cellspacing="0" style="margin:28px 0 14px;">
 <tr>
-  <td style="background:#eef2ff;color:#4338ca;font-weight:700;font-size:13px;padding:6px 14px;border-radius:999px;">{escape(category)}</td>
+  <td style="background:#fae8ff;color:#86198f;font-weight:700;font-size:13px;padding:6px 14px;border-radius:999px;">{escape(category)}</td>
   <td style="padding-left:10px;color:#9ca3af;font-size:12px;">{len(cat_listings)} tin · giá tăng dần</td>
 </tr>
 </table>
@@ -759,13 +888,27 @@ def build_html(listings, timestamp):
 
     return f"""\
 <html>
-<body style="margin:0; padding:0; background:#f3f4f6; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<style>
+  @media (prefers-color-scheme: dark) {{
+    .email-bg {{ background:#0b0b0d !important; }}
+    .email-card {{ background:#17171a !important; border-color:#2a2a2e !important; }}
+    .email-text {{ color:#f4f4f5 !important; }}
+    .email-muted {{ color:#a1a1aa !important; }}
+  }}
+</style>
+</head>
+<body style="margin:0; padding:0; background:#f3f4f6; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;" class="email-bg">
 <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#f3f4f6;padding:24px 12px;">
 <tr><td align="center">
 <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:640px;">
 <tr><td style="padding-bottom:4px;">
-  <h1 style="margin:0;color:#111827;font-size:22px;font-weight:800;letter-spacing:-0.3px;">Nhà & căn hộ Hà Nội</h1>
-  <p style="margin:6px 0 0;color:#9ca3af;font-size:13px;">Cập nhật {escape(timestamp)} · {len(listings)} tin đăng</p>
+  <h1 class="email-text" style="margin:0;color:#111827;font-size:22px;font-weight:800;letter-spacing:-0.3px;">Nhà & căn hộ Hà Nội</h1>
+  <p class="email-muted" style="margin:6px 0 0;color:#9ca3af;font-size:13px;">Cập nhật {escape(timestamp)} · {len(listings)} tin đăng ·
+    <a href="{escape(GITHUB_PAGE_URL)}" style="color:#86198f;font-weight:600;">Xem đầy đủ (ảnh rõ hơn) →</a>
+  </p>
 </td></tr>
 <tr><td>
 {body}
@@ -781,7 +924,8 @@ Nguồn: từng tin đăng thực tế trên Mogi.vn (không phải giá trung b
 
 
 def build_plain_text(listings, timestamp):
-    lines = [f"Tin dang ban nha & can ho Ha Noi - cap nhat {timestamp}", f"{len(listings)} tin dang", ""]
+    lines = [f"Tin dang ban nha & can ho Ha Noi - cap nhat {timestamp}", f"{len(listings)} tin dang",
+             f"Xem day du (anh ro hon): {GITHUB_PAGE_URL}", ""]
     for category, _ in CATEGORIES:
         cat_listings = [l for l in listings if l["category"] == category]
         if not cat_listings:
@@ -1118,6 +1262,7 @@ def cmd_build():
     subject = f"Tin dang nha & can ho Ha Noi - {now.strftime('%d/%m/%Y %H:%M')} ({len(listings)} tin)"
     html_body = build_html(listings, timestamp)
     text_body = build_plain_text(listings, timestamp)
+    page_html = build_github_page_html(listings, timestamp)
 
     with open(os.path.join(EMAIL_DIR, "subject.txt"), "w") as f:
         f.write(subject)
@@ -1128,8 +1273,13 @@ def cmd_build():
     with open(os.path.join(EMAIL_DIR, "meta.json"), "w") as f:
         json.dump({"send": True, "listing_count": len(listings)}, f)
 
+    os.makedirs(os.path.dirname(GITHUB_PAGE_PATH), exist_ok=True)
+    with open(GITHUB_PAGE_PATH, "w", encoding="utf-8") as f:
+        f.write(page_html)
+
     save_last_hash(price_hash)
     print(f"Built email ({len(listings)} listings). Saved to ./{EMAIL_DIR}/")
+    print(f"Wrote GitHub Page to {GITHUB_PAGE_PATH}")
 
 
 def cmd_send():
