@@ -466,11 +466,28 @@ def parse_listing_chunk(lid, href, chunk_html, category):
     district_m = DISTRICT_RE.search(text)
     if not district_m:
         return None
-    # A price mentioned directly in the title (e.g. "...Giá 6,7 tỷ") is
-    # unambiguously this listing's price - prefer it over a price found
-    # anywhere else in the chunk, since the wider chunk can occasionally
-    # include unrelated content (see MAX_CHUNK_CHARS comment above).
-    price = (parse_price_trieu(title) if title else None) or parse_price_trieu(text)
+    # Price extraction has to reconcile two real, conflicting listing
+    # patterns found in production:
+    #   (a) price ONLY appears within the title text itself (e.g. "...Giá
+    #       6,7 tỷ" or "112m2 chỉ 13 tỷ 3pn 2vs") - nowhere else in the
+    #       chunk has a price at all.
+    #   (b) title contains a fake, clickbait-low price ("...chỉ 1 tỷ...")
+    #       while the REAL price lives in a separate, dedicated price
+    #       field elsewhere on the page (confirmed against a real listing:
+    #       Matrix One GĐ1-2, title said "1 tỷ", real page showed "10 tỷ").
+    # These can't be told apart by content alone, but position works: a
+    # price found OUTSIDE the title is more likely the authoritative
+    # dedicated field, so it's preferred whenever one exists; the title's
+    # own number is only used as a last resort when nothing else is found
+    # anywhere in the chunk (case (a)).
+    price_search_text = text
+    if title:
+        idx = text.find(title)
+        if idx != -1:
+            price_search_text = text[idx + len(title):]
+    price = parse_price_trieu(price_search_text)
+    if price is None and title:
+        price = parse_price_trieu(title)
     posted_label, posted_date = parse_posted_date(text)
     # Soft hint (not a hard exclusion): wording common in mini-apartment ads,
     # computed from the full chunk text since these phrases rarely appear
