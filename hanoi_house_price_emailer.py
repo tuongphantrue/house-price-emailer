@@ -720,17 +720,18 @@ def build_listing_card_html(l):
 <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="email-card" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:16px;overflow:hidden;">
 {image_row}
 <tr>
-  <td style="padding:16px 8px 4px 20px;vertical-align:top;">
+  <td colspan="2" style="padding:16px 20px 4px;vertical-align:top;">
     <a href="{escape(l['url'])}" style="color:#111827;text-decoration:none;font-weight:700;font-size:15px;line-height:1.4;">{escape(l['title'])}</a><br>
     <span style="color:#6b7280;font-size:13px;line-height:1.6;">{district_str} · {detail_str}</span><br>
     <span style="color:#9ca3af;font-size:12px;">đăng {posted_str}</span>
   </td>
-  <td style="padding:16px 20px 4px 8px;text-align:right;white-space:nowrap;vertical-align:top;">
+</tr>
+<tr>
+  <td colspan="2" style="padding:10px 20px 16px;vertical-align:top;">
     <span style="display:inline-block;background:#ecfdf5;color:#047857;font-weight:800;font-size:15px;padding:6px 12px;border-radius:999px;font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Menlo,monospace;font-variant-numeric:tabular-nums;">{price_str}</span>
   </td>
 </tr>
 {warning_html}
-<tr><td colspan="2" style="height:12px;"></td></tr>
 </table>"""
 
 
