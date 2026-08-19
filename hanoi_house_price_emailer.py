@@ -69,6 +69,8 @@ still look the way LISTING_HREF_RE / parse_listing_chunk expect below.
 """
 
 import hashlib
+import io
+import math
 import json
 import os
 import re
@@ -1263,18 +1265,70 @@ GEOCODE_HEADERS = {
 _geocode_cache = {}
 
 
-def build_static_map_url(lat, lon, zoom=16, size="400x300"):
-    """Free, no-API-key static map image via staticmap.openstreetmap.de.
-    NOT verified as currently live from this environment (that domain
-    isn't reachable from the sandbox this was built in) - OpenStreetMap's
-    own wiki notes similar free static-map services have gone offline
-    before, so treat this as unverified until confirmed on a real run.
+MAP_TILE_ZOOM = 16
+MAP_TILES_DIR = "docs/maps"
+# OSM's tile usage policy requires a valid identifying User-Agent and asks
+# that bulk/automated use be kept light - see
+# https://operations.osmfoundation.org/policies/tiles/. Fetching one tile
+# per listing (not a multi-tile mosaic) with a real delay between requests
+# is meant to stay well within "light personal use."
+TILE_REQUEST_DELAY = 1.0
+MARKER_COLOR = (220, 38, 38)  # red, matches the pin color used elsewhere
+
+
+def deg2tile(lat, lon, zoom):
+    """Standard Web Mercator slippy-map tile math. Returns
+    (xtile, ytile, px, py) - the tile containing (lat, lon), plus the
+    pixel position of that exact point within the 256x256 tile image."""
+    lat_rad = math.radians(lat)
+    n = 2.0 ** zoom
+    xtile_f = (lon + 180.0) / 360.0 * n
+    ytile_f = (1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n
+    xtile, ytile = int(xtile_f), int(ytile_f)
+    px = int((xtile_f - xtile) * 256)
+    py = int((ytile_f - ytile) * 256)
+    return xtile, ytile, px, py
+
+
+def build_map_image(lat, lon, listing_id):
+    """Fetches a single OSM tile covering (lat, lon), draws a marker at
+    the precise pixel position, and saves it to MAP_TILES_DIR. Returns the
+    relative path (e.g. 'maps/123.png') on success, None on any failure -
+    a missing map image for one listing shouldn't break the whole build.
+    Uses tile.openstreetmap.org directly (the standard, heavily-used OSM
+    tile infrastructure - the same servers the interactive Leaflet map
+    already relies on) instead of a third-party "static map" script,
+    since staticmap.openstreetmap.de was confirmed to have a real history
+    of outages (see conversation/commit history for the research).
     """
-    return (
-        f"https://staticmap.openstreetmap.de/staticmap.php"
-        f"?center={lat},{lon}&zoom={zoom}&size={size}&maptype=mapnik"
-        f"&markers={lat},{lon},ol-marker-blue"
-    )
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        print("    Pillow not installed - run 'pip install Pillow' (see requirements.txt). "
+              "Skipping map image generation.", file=sys.stderr)
+        return None
+
+    xtile, ytile, px, py = deg2tile(lat, lon, MAP_TILE_ZOOM)
+    tile_url = f"https://tile.openstreetmap.org/{MAP_TILE_ZOOM}/{xtile}/{ytile}.png"
+    try:
+        resp = requests.get(tile_url, headers=GEOCODE_HEADERS, timeout=10)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"    failed to fetch map tile for listing {listing_id}: {e}", file=sys.stderr)
+        return None
+
+    try:
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        r = 7
+        draw.ellipse([px - r, py - r, px + r, py + r], fill=MARKER_COLOR, outline=(255, 255, 255), width=2)
+        os.makedirs(MAP_TILES_DIR, exist_ok=True)
+        rel_path = f"maps/{listing_id}.png"
+        img.save(os.path.join("docs", rel_path))
+        return rel_path
+    except Exception as e:
+        print(f"    failed to compose map image for listing {listing_id}: {e}", file=sys.stderr)
+        return None
 
 
 def geocode_address(address):
@@ -1370,9 +1424,17 @@ def cmd_build():
     geocoded_count = sum(1 for l in listings if l["lat"] is not None)
     print(f"  Geocoded {geocoded_count}/{len(listings)} listing(s).")
 
-    for l in listings:
-        if l["lat"] is not None:
-            l["images"] = list(l["images"]) + [build_static_map_url(l["lat"], l["lon"])]
+    to_map = [l for l in listings if l["lat"] is not None]
+    print(f"Generating {len(to_map)} map image(s) from OSM tiles (~1 req/sec) ...")
+    map_ok = 0
+    for i, l in enumerate(to_map):
+        if i > 0:
+            time.sleep(TILE_REQUEST_DELAY)
+        rel_path = build_map_image(l["lat"], l["lon"], l["id"])
+        if rel_path:
+            map_ok += 1
+            l["images"] = list(l["images"]) + [GITHUB_PAGE_URL.rstrip("/") + "/" + rel_path]
+    print(f"  Generated {map_ok}/{len(to_map)} map image(s).")
 
     flagged = [(l, flag_suspicious(l)) for l in listings]
     flagged = [(l, w) for l, w in flagged if w]
