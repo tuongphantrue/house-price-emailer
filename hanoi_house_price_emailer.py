@@ -1263,6 +1263,20 @@ GEOCODE_HEADERS = {
 _geocode_cache = {}
 
 
+def build_static_map_url(lat, lon, zoom=16, size="400x300"):
+    """Free, no-API-key static map image via staticmap.openstreetmap.de.
+    NOT verified as currently live from this environment (that domain
+    isn't reachable from the sandbox this was built in) - OpenStreetMap's
+    own wiki notes similar free static-map services have gone offline
+    before, so treat this as unverified until confirmed on a real run.
+    """
+    return (
+        f"https://staticmap.openstreetmap.de/staticmap.php"
+        f"?center={lat},{lon}&zoom={zoom}&size={size}&maptype=mapnik"
+        f"&markers={lat},{lon},ol-marker-blue"
+    )
+
+
 def geocode_address(address):
     """Geocodes a Vietnamese address to (lat, lon) using OpenStreetMap's
     free Nominatim service - no API key needed. Returns None on any
@@ -1355,6 +1369,10 @@ def cmd_build():
         l["lat"], l["lon"] = latlon if latlon else (None, None)
     geocoded_count = sum(1 for l in listings if l["lat"] is not None)
     print(f"  Geocoded {geocoded_count}/{len(listings)} listing(s).")
+
+    for l in listings:
+        if l["lat"] is not None:
+            l["images"] = list(l["images"]) + [build_static_map_url(l["lat"], l["lon"])]
 
     flagged = [(l, flag_suspicious(l)) for l in listings]
     flagged = [(l, w) for l, w in flagged if w]
