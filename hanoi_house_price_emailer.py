@@ -1372,6 +1372,21 @@ def build_map_image(lat, lon, listing_id):
         return None
 
 
+# Hoàn Kiếm Lake, the traditional/commonly-cited center of Hanoi.
+# Coordinates per Wikipedia's cited DMS (21°01'44"N 105°51'09"E).
+HANOI_CENTER_LAT, HANOI_CENTER_LON = 21.02889, 105.85250
+MAX_DISTANCE_FROM_CENTER_KM = 10
+
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    r = 6371.0  # Earth's radius in km
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
 def geocode_address(address):
     """Geocodes a Vietnamese address to (lat, lon) using OpenStreetMap's
     free Nominatim service - no API key needed. Returns None on any
@@ -1446,6 +1461,38 @@ def cmd_build():
     listings = apply_ai_verdicts(listings)
     print(f"Total after AI review: {len(listings)} listing(s).")
 
+    print(f"Geocoding {len(listings)} listing(s) via Nominatim (free, ~1 req/sec) ...")
+    for i, l in enumerate(listings):
+        if i > 0:
+            time.sleep(GEOCODE_REQUEST_DELAY)
+        latlon = geocode_address(l["address"])
+        l["lat"], l["lon"] = latlon if latlon else (None, None)
+    geocoded_count = sum(1 for l in listings if l["lat"] is not None)
+    print(f"  Geocoded {geocoded_count}/{len(listings)} listing(s).")
+
+    # Only keep listings CONFIRMED within MAX_DISTANCE_FROM_CENTER_KM of
+    # central Hanoi - a listing that failed to geocode can't be confirmed
+    # either way, so it's excluded too rather than assumed to pass.
+    too_far = []
+    for l in listings:
+        if l["lat"] is None:
+            too_far.append(l)
+            continue
+        dist = haversine_km(HANOI_CENTER_LAT, HANOI_CENTER_LON, l["lat"], l["lon"])
+        l["distance_from_center_km"] = round(dist, 1)
+        if dist > MAX_DISTANCE_FROM_CENTER_KM:
+            too_far.append(l)
+    if too_far:
+        print(f"  Dropping {len(too_far)} listing(s) beyond {MAX_DISTANCE_FROM_CENTER_KM}km from "
+              f"central Hanoi (or unconfirmed - geocoding failed):", file=sys.stderr)
+        for l in too_far[:10]:
+            dist_str = f"{l['distance_from_center_km']}km" if l.get("distance_from_center_km") is not None else "unknown"
+            print(f"    [{l['category']}] {dist_str} - {l['title'][:50]}", file=sys.stderr)
+        if len(too_far) > 10:
+            print(f"    ... and {len(too_far) - 10} more", file=sys.stderr)
+    listings = [l for l in listings if l not in too_far]
+    print(f"Total within {MAX_DISTANCE_FROM_CENTER_KM}km of central Hanoi: {len(listings)} listing(s).")
+
     print(f"Fetching photo galleries for {len(listings)} listing(s) (up to "
           f"{MAX_IMAGES_PER_LISTING} each) ...")
     for i, l in enumerate(listings):
@@ -1455,15 +1502,6 @@ def cmd_build():
     total_images = sum(len(l["images"]) for l in listings)
     no_image_count = sum(1 for l in listings if not l["images"])
     print(f"  Got {total_images} image(s) total ({no_image_count} listing(s) with none found).")
-
-    print(f"Geocoding {len(listings)} listing(s) via Nominatim (free, ~1 req/sec) ...")
-    for i, l in enumerate(listings):
-        if i > 0:
-            time.sleep(GEOCODE_REQUEST_DELAY)
-        latlon = geocode_address(l["address"])
-        l["lat"], l["lon"] = latlon if latlon else (None, None)
-    geocoded_count = sum(1 for l in listings if l["lat"] is not None)
-    print(f"  Geocoded {geocoded_count}/{len(listings)} listing(s).")
 
     to_map = [l for l in listings if l["lat"] is not None]
 
