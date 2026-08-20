@@ -219,6 +219,13 @@ MINI_APARTMENT_HINT_RE = re.compile(
     r"sổ hồng riêng từng phòng|an ninh 24/24|khép kín riêng biệt", re.IGNORECASE
 )
 MINI_APARTMENT_HINT_MAX_AREA = 30  # m2
+# Any character repeated 5+ times in a row is a strong, unambiguous spam
+# signal - no legitimate Vietnamese listing title does this. Confirmed
+# against a real listing ("Vinhomes SaiGon Parkkkkkkkkkkk") that had an
+# implausible price (370 triệu for a premium Vinhomes development, which
+# only ever sells in the tỷ range) - the title itself was the tell, not
+# just the price.
+SPAM_REPEATED_CHAR_RE = re.compile(r"(.)\1{4,}")
 TY_TRIEU_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*tỷ(?:\s*(\d+(?:[.,]\d+)?)\s*triệu)?")
 TRIEU_ONLY_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*triệu")
 
@@ -469,6 +476,8 @@ def parse_listing_chunk(lid, href, chunk_html, category):
         title = re.sub(r"^Hình ảnh\s+", "", title).strip()
     if title:
         title = unicodedata.normalize("NFC", title)
+    if title and SPAM_REPEATED_CHAR_RE.search(title):
+        return None
 
     area_m = AREA_RE.search(text)
     pn_m = PN_RE.search(text)
