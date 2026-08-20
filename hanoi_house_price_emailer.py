@@ -718,13 +718,19 @@ def build_listing_card_html(l):
 </td></tr>"""
 
     images = l.get("images") or ([l["image_url"]] if l.get("image_url") else [])
+    map_image_url = l.get("map_image_url")
+    map_link = f"https://www.google.com/maps?q={l['lat']},{l['lon']}" if l.get("lat") is not None else None
+
+    def link_for(img):
+        return map_link if (map_image_url and img == map_image_url and map_link) else l["url"]
+
     if images:
         if len(images) == 1:
             img_html = (
                 f'<img src="{escape(images[0])}" alt="" '
                 f'style="max-width:100%;height:auto;display:block;border-radius:10px 10px 0 0;">'
             )
-            image_row = f'<tr><td colspan="2" style="padding:0;"><a href="{escape(l["url"])}" style="display:block;">{img_html}</a></td></tr>'
+            image_row = f'<tr><td colspan="2" style="padding:0;"><a href="{escape(link_for(images[0]))}" style="display:block;">{img_html}</a></td></tr>'
         else:
             # Horizontally-scrollable strip for multiple photos - fixed
             # height with auto width per image keeps each photo's natural
@@ -734,7 +740,7 @@ def build_listing_card_html(l):
             # in some clients (e.g. Outlook desktop) to a static row -
             # not catastrophic, just loses the scroll interaction there.
             thumbs = "".join(
-                f'<a href="{escape(l["url"])}"><img src="{escape(img)}" alt="" '
+                f'<a href="{escape(link_for(img))}"><img src="{escape(img)}" alt="" '
                 f'style="height:180px;width:auto;display:inline-block;border-radius:8px;'
                 f'margin-right:8px;vertical-align:top;"></a>'
                 for img in images
@@ -796,25 +802,34 @@ def build_listing_card_page_html(l):
         warning_html = f'<div class="warn">⚠️ {warning_text}</div>'
 
     images = l.get("images") or ([l["image_url"]] if l.get("image_url") else [])
+    map_image_url = l.get("map_image_url")
+    map_link = f"https://www.google.com/maps?q={l['lat']},{l['lon']}" if l.get("lat") is not None else None
+
+    def link_for(img):
+        return map_link if (map_image_url and img == map_image_url and map_link) else l["url"]
+
     if images:
         gallery_html = "".join(
-            f'<img src="{escape(img)}" alt="" loading="lazy">' for img in images
+            f'<a href="{escape(link_for(img))}" target="_blank" rel="noopener"><img src="{escape(img)}" alt="" loading="lazy"></a>'
+            for img in images
         )
         gallery_html = f'<div class="gallery">{gallery_html}</div>'
     else:
         gallery_html = '<div class="gallery gallery-empty"></div>'
 
     return f"""
-<a class="card" href="{escape(l['url'])}" target="_blank" rel="noopener">
+<div class="card">
   {gallery_html}
-  <div class="card-body">
-    <div class="card-title">{escape(l['title'])}</div>
-    <div class="card-meta">{district_str} · {detail_str}</div>
-    <div class="card-meta faint">đăng {posted_str}</div>
-    {warning_html}
-    <div class="price">{price_str}</div>
-  </div>
-</a>"""
+  <a class="card-body-link" href="{escape(l['url'])}" target="_blank" rel="noopener">
+    <div class="card-body">
+      <div class="card-title">{escape(l['title'])}</div>
+      <div class="card-meta">{district_str} · {detail_str}</div>
+      <div class="card-meta faint">đăng {posted_str}</div>
+      {warning_html}
+      <div class="price">{price_str}</div>
+    </div>
+  </a>
+</div>"""
 
 
 def build_github_page_html(listings, timestamp):
@@ -919,11 +934,13 @@ def build_github_page_html(listings, timestamp):
   .grid {{ display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:16px; }}
   .card {{
     display:block; background:var(--surface); border:1px solid var(--border); border-radius:12px;
-    overflow:hidden; text-decoration:none; color:inherit; transition:transform .15s ease, box-shadow .15s ease;
+    overflow:hidden; transition:transform .15s ease, box-shadow .15s ease;
   }}
   .card:hover {{ transform:translateY(-2px); box-shadow:0 8px 24px rgba(0,0,0,.08); }}
+  .card-body-link {{ display:block; text-decoration:none; color:inherit; }}
   .gallery {{ display:flex; overflow-x:auto; scroll-snap-type:x mandatory; background:var(--border); }}
-  .gallery img {{ height:180px; width:100%; object-fit:cover; scroll-snap-align:start; flex:0 0 100%; }}
+  .gallery a {{ flex:0 0 100%; display:block; scroll-snap-align:start; }}
+  .gallery img {{ height:180px; width:100%; object-fit:cover; display:block; }}
   .gallery-empty {{ height:120px; }}
   .card-body {{ padding:14px 16px 16px; }}
   .card-title {{ font-weight:700; font-size:14px; line-height:1.4; margin-bottom:6px; }}
@@ -1280,7 +1297,7 @@ GEOCODE_HEADERS = {
 _geocode_cache = {}
 
 
-MAP_TILE_ZOOM = 16
+MAP_TILE_ZOOM = 12  # lower = more zoomed out, shows relative position in Hanoi
 MAP_TILES_DIR = "docs/maps"
 # OSM's tile usage policy requires a valid identifying User-Agent and asks
 # that bulk/automated use be kept light - see
@@ -1463,7 +1480,9 @@ def cmd_build():
         rel_path = build_map_image(l["lat"], l["lon"], l["id"])
         if rel_path:
             map_ok += 1
-            l["images"] = [GITHUB_PAGE_URL.rstrip("/") + "/" + rel_path] + list(l["images"])
+            map_url = GITHUB_PAGE_URL.rstrip("/") + "/" + rel_path
+            l["images"] = [map_url] + list(l["images"])
+            l["map_image_url"] = map_url
     print(f"  Generated {map_ok}/{len(to_map)} map image(s).")
 
     flagged = [(l, flag_suspicious(l)) for l in listings]
