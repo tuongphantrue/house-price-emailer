@@ -705,10 +705,6 @@ def build_listing_card_html(l):
     detail_str = " · ".join(details) if details else "—"
     district_str = escape(l["district"]) if l["district"] else "Không rõ quận/huyện"
     posted_str = escape(l["posted_label"]) if l["posted_label"] else "?"
-    if l.get("lat") is not None:
-        map_link = f"https://www.google.com/maps?q={l['lat']},{l['lon']}"
-    else:
-        map_link = f"https://www.google.com/maps/search/{requests.utils.quote(l.get('address') or l.get('district') or 'Hà Nội')}"
 
     warnings = flag_suspicious(l)
     warning_html = ""
@@ -757,7 +753,7 @@ def build_listing_card_html(l):
   <td colspan="2" style="padding:16px 20px 4px;vertical-align:top;">
     <a href="{escape(l['url'])}" style="color:#111827;text-decoration:none;font-weight:700;font-size:15px;line-height:1.4;">{escape(l['title'])}</a><br>
     <span style="color:#6b7280;font-size:13px;line-height:1.6;">{district_str} · {detail_str}</span><br>
-    <span style="color:#9ca3af;font-size:12px;">đăng {posted_str} · <a href="{escape(map_link)}" style="color:#1d4ed8;">📍 Xem vị trí</a></span>
+    <span style="color:#9ca3af;font-size:12px;">đăng {posted_str}</span>
   </td>
 </tr>
 <tr>
@@ -848,7 +844,13 @@ def build_github_page_html(listings, timestamp):
   }}).addTo(map);
   const bounds = [];
   markers.forEach(m => {{
-    const marker = L.marker([m.lat, m.lon]).addTo(map);
+    const label = L.divIcon({{
+      className: 'price-pin',
+      html: '<div class="price-pin-label">' + m.price.replace(/</g, '&lt;') + '</div><div class="price-pin-arrow"></div>',
+      iconSize: null,
+      iconAnchor: [0, 0],
+    }});
+    const marker = L.marker([m.lat, m.lon], {{icon: label}}).addTo(map);
     marker.bindPopup(
       '<strong>' + m.title.replace(/</g, '&lt;') + '</strong><br>' +
       m.price + '<br><a href="' + m.url + '" target="_blank" rel="noopener">Xem tin</a>'
@@ -889,6 +891,19 @@ def build_github_page_html(listings, timestamp):
     :root {{ --bg:#0b0b0d; --surface:#17171a; --border:#2a2a2e; --text:#f4f4f5; --muted:#a1a1aa; --faint:#71717a; }}
   }}
   #map {{ height:420px; border-radius:12px; border:1px solid var(--border); z-index:0; }}
+  .price-pin {{ background:transparent; border:none; }}
+  .price-pin-label {{
+    position:absolute; transform:translate(-50%, -100%);
+    background:var(--accent); color:#fff; font-weight:700; font-size:12px;
+    padding:4px 8px; border-radius:6px; white-space:nowrap;
+    box-shadow:0 2px 6px rgba(0,0,0,.25);
+    font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Menlo,monospace;
+  }}
+  .price-pin-arrow {{
+    position:absolute; transform:translate(-50%, -2px);
+    width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent;
+    border-top:6px solid var(--accent);
+  }}
   * {{ box-sizing:border-box; }}
   body {{
     margin:0; background:var(--bg); color:var(--text);
@@ -1425,6 +1440,21 @@ def cmd_build():
     print(f"  Geocoded {geocoded_count}/{len(listings)} listing(s).")
 
     to_map = [l for l in listings if l["lat"] is not None]
+
+    # Clean up map images from previous runs before generating new ones -
+    # listing IDs differ run to run (different listings pass the filters
+    # each time), so without this docs/maps/ would just grow forever and
+    # never shrink, bloating the repo over time.
+    if os.path.isdir(MAP_TILES_DIR):
+        current_ids = {l["id"] for l in to_map}
+        removed = 0
+        for fname in os.listdir(MAP_TILES_DIR):
+            if fname.endswith(".png") and fname[:-4] not in current_ids:
+                os.remove(os.path.join(MAP_TILES_DIR, fname))
+                removed += 1
+        if removed:
+            print(f"  Removed {removed} stale map image(s) from previous run(s).")
+
     print(f"Generating {len(to_map)} map image(s) from OSM tiles (~1 req/sec) ...")
     map_ok = 0
     for i, l in enumerate(to_map):
@@ -1433,7 +1463,7 @@ def cmd_build():
         rel_path = build_map_image(l["lat"], l["lon"], l["id"])
         if rel_path:
             map_ok += 1
-            l["images"] = list(l["images"]) + [GITHUB_PAGE_URL.rstrip("/") + "/" + rel_path]
+            l["images"] = [GITHUB_PAGE_URL.rstrip("/") + "/" + rel_path] + list(l["images"])
     print(f"  Generated {map_ok}/{len(to_map)} map image(s).")
 
     flagged = [(l, flag_suspicious(l)) for l in listings]
