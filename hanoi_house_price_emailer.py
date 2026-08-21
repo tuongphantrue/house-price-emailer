@@ -842,6 +842,21 @@ def build_listing_card_page_html(l):
 
 
 def build_github_page_html(listings, timestamp):
+    priced = [l for l in listings if isinstance(l["price_trieu"], (int, float))]
+    kpis = [("Tổng số tin", str(len(listings)))]
+    for category, _ in CATEGORIES:
+        cat_priced = [l for l in priced if l["category"] == category]
+        if cat_priced:
+            cheapest = min(cat_priced, key=lambda l: l["price_trieu"])
+            kpis.append((f"{category} rẻ nhất", format_price(cheapest["price_trieu"])))
+    geocoded_for_kpi = [l for l in listings if l.get("lat") is not None]
+    if listings:
+        kpis.append(("Có vị trí trên bản đồ", f"{len(geocoded_for_kpi)}/{len(listings)}"))
+    kpi_html = "".join(
+        f'<div class="kpi"><div class="kpi-value">{escape(v)}</div><div class="kpi-label">{escape(k)}</div></div>'
+        for k, v in kpis
+    )
+
     geocoded = [l for l in listings if l.get("lat") is not None]
     map_markers_json = json.dumps([
         {
@@ -858,8 +873,15 @@ def build_github_page_html(listings, timestamp):
   <h2><span class="pill" style="background:#dbeafe;color:#1e40af;">Bản đồ</span> <span class="muted">{len(geocoded)}/{len(listings)} tin có vị trí</span></h2>
   <div id="map"></div>
 </section>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
 <script>
+document.addEventListener('DOMContentLoaded', function() {{
+  if (typeof L === 'undefined') {{
+    console.error('Leaflet failed to load - map skipped, rest of page still works.');
+    var mapEl = document.getElementById('map');
+    if (mapEl) mapEl.outerHTML = '<p class="muted">Không tải được bản đồ (lỗi mạng) - xem danh sách bên dưới.</p>';
+    return;
+  }}
   const markers = {map_markers_json};
   const map = L.map('map');
   L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
@@ -882,6 +904,7 @@ def build_github_page_html(listings, timestamp):
     bounds.push([m.lat, m.lon]);
   }});
   if (bounds.length > 0) map.fitBounds(bounds, {{padding: [30, 30]}});
+}});
 </script>"""
 
     sections = []
@@ -904,7 +927,7 @@ def build_github_page_html(listings, timestamp):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Nhà & căn hộ Hà Nội</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <style>
   :root {{
     --bg:#f7f7f8; --surface:#ffffff; --border:#e4e4e7; --text:#18181b;
@@ -935,7 +958,14 @@ def build_github_page_html(listings, timestamp):
   }}
   .wrap {{ max-width:1100px; margin:0 auto; padding:32px 20px 60px; }}
   h1 {{ font-size:24px; font-weight:800; letter-spacing:-0.3px; margin:0; }}
-  .subtitle {{ color:var(--muted); font-size:13px; margin:6px 0 32px; }}
+  .subtitle {{ color:var(--muted); font-size:13px; margin:6px 0 24px; }}
+  .kpi-strip {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:12px; margin-bottom:32px; }}
+  .kpi {{ background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }}
+  .kpi-value {{
+    font-size:19px; font-weight:800; font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Menlo,monospace;
+    font-variant-numeric:tabular-nums; color:var(--accent-text);
+  }}
+  .kpi-label {{ font-size:11.5px; color:var(--muted); margin-top:2px; }}
   h2 {{ font-size:15px; margin:0 0 14px; display:flex; align-items:center; gap:10px; }}
   .pill {{ background:var(--accent-soft); color:var(--accent-text); font-weight:700; padding:5px 12px; border-radius:999px; }}
   .muted {{ color:var(--muted); font-weight:400; font-size:12px; }}
@@ -968,6 +998,7 @@ def build_github_page_html(listings, timestamp):
 <div class="wrap">
   <h1>Nhà & căn hộ Hà Nội</h1>
   <div class="subtitle">Cập nhật {escape(timestamp)} · {len(listings)} tin đăng</div>
+  <div class="kpi-strip">{kpi_html}</div>
   {body}
   <footer>
     Nguồn: từng tin đăng thực tế trên Mogi.vn (không phải giá trung bình) · Trang tự động, chỉ mang tính tham khảo, không phải lời khuyên đầu tư.
