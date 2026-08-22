@@ -817,6 +817,8 @@ def build_listing_card_page_html(l):
     def link_for(img):
         return map_link if (map_image_url and img == map_image_url and map_link) else l["url"]
 
+    number_badge = f'<span class="map-number-badge">#{l["map_number"]}</span> ' if l.get("map_number") else ""
+
     if images:
         gallery_html = "".join(
             f'<a href="{escape(link_for(img))}" target="_blank" rel="noopener"><img src="{escape(img)}" alt="" loading="lazy"></a>'
@@ -831,7 +833,7 @@ def build_listing_card_page_html(l):
   {gallery_html}
   <a class="card-body-link" href="{escape(l['url'])}" target="_blank" rel="noopener">
     <div class="card-body">
-      <div class="card-title">{escape(l['title'])}</div>
+      <div class="card-title">{number_badge}{escape(l['title'])}</div>
       <div class="card-meta">{district_str} · {detail_str}</div>
       <div class="card-meta faint">đăng {posted_str}</div>
       {warning_html}
@@ -858,9 +860,11 @@ def build_github_page_html(listings, timestamp):
     )
 
     geocoded = [l for l in listings if l.get("lat") is not None]
+    for i, l in enumerate(geocoded, start=1):
+        l["map_number"] = i
     map_markers_json = json.dumps([
         {
-            "lat": l["lat"], "lon": l["lon"],
+            "lat": l["lat"], "lon": l["lon"], "number": l["map_number"],
             "title": l["title"], "price": format_price(l["price_trieu"]),
             "url": l["url"], "category": l["category"],
         }
@@ -870,7 +874,7 @@ def build_github_page_html(listings, timestamp):
     if geocoded:
         map_section = f"""
 <section>
-  <h2><span class="pill" style="background:#dbeafe;color:#1e40af;">Bản đồ</span> <span class="muted">{len(geocoded)}/{len(listings)} tin có vị trí</span></h2>
+  <h2><span class="pill" style="background:#dbeafe;color:#1e40af;">Bản đồ</span> <span class="muted">{len(geocoded)}/{len(listings)} tin có vị trí - số trên bản đồ khớp với số trên mỗi tin bên dưới</span></h2>
   <div id="map"></div>
 </section>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
@@ -892,13 +896,13 @@ document.addEventListener('DOMContentLoaded', function() {{
   markers.forEach(m => {{
     const label = L.divIcon({{
       className: 'price-pin',
-      html: '<div class="price-pin-label">' + m.price.replace(/</g, '&lt;') + '</div><div class="price-pin-arrow"></div>',
+      html: '<div class="price-pin-label">#' + m.number + ' · ' + m.price.replace(/</g, '&lt;') + '</div><div class="price-pin-arrow"></div>',
       iconSize: null,
       iconAnchor: [0, 0],
     }});
     const marker = L.marker([m.lat, m.lon], {{icon: label}}).addTo(map);
     marker.bindPopup(
-      '<strong>' + m.title.replace(/</g, '&lt;') + '</strong><br>' +
+      '<strong>#' + m.number + ' - ' + m.title.replace(/</g, '&lt;') + '</strong><br>' +
       m.price + '<br><a href="' + m.url + '" target="_blank" rel="noopener">Xem tin</a>'
     );
     bounds.push([m.lat, m.lon]);
@@ -983,6 +987,11 @@ document.addEventListener('DOMContentLoaded', function() {{
   .gallery-empty {{ height:120px; }}
   .card-body {{ padding:14px 16px 16px; }}
   .card-title {{ font-weight:700; font-size:14px; line-height:1.4; margin-bottom:6px; }}
+  .map-number-badge {{
+    display:inline-block; background:var(--accent); color:#fff; font-size:11px; font-weight:800;
+    padding:1px 6px; border-radius:5px; vertical-align:middle;
+    font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Menlo,monospace;
+  }}
   .card-meta {{ color:var(--muted); font-size:12.5px; line-height:1.6; }}
   .card-meta.faint {{ color:var(--faint); font-size:11.5px; }}
   .warn {{ background:var(--warn-soft); color:var(--warn-text); font-size:11.5px; font-weight:600; padding:6px 10px; border-radius:6px; margin-top:8px; }}
